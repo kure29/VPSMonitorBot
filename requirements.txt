@@ -1,3 +1,7 @@
+# VPSMonitorBot v1.0 - Python依赖包
+# 作者: kure29
+# 网站: https://kure29.com
+
 # Telegram Bot API
 python-telegram-bot==20.7
 
