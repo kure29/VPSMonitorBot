@@ -1,0 +1,42 @@
+# Telegram Bot API
+python-telegram-bot==20.7
+
+# Web scraping and anti-bot detection
+cloudscraper==1.2.71
+requests>=2.31.0
+
+# Async HTTP client
+aiohttp>=3.9.1
+
+# Compression support
+brotli>=1.1.0
+
+# Async file operations
+aiofiles>=23.2.0
+
+# Data validation (optional but recommended)
+pydantic>=2.0.0
+
+# Better error handling and retry logic
+tenacity>=8.2.0
+
+# JSON schema validation
+jsonschema>=4.17.0
+
+# Environment variable management
+python-decouple>=3.8
+
+# Improved logging
+structlog>=23.1.0
+
+# Rate limiting
+ratelimit>=2.2.1
+
+# URL parsing and validation
+validators>=0.20.0
+
+# Timezone handling
+pytz>=2023.3
+
+# Progress bars for CLI (optional)
+tqdm>=4.65.0
