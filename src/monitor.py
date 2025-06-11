@@ -1,15 +1,74 @@
+#!/usr/bin/env python3
+"""
+VPS监控系统 v1.0 - 主程序
+作者: kure29
+网站: https://kure29.com
+描述: VPS库存监控机器人，自动路径检测版本
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# ====== 路径自动检测和修复 ======
+def setup_project_paths():
+    """自动检测并设置项目路径"""
+    current_file = Path(__file__).resolve()
+    
+    # 检测项目根目录
+    if current_file.parent.name == 'src':
+        # 在src目录下运行
+        project_root = current_file.parent.parent
+        print(f"🔍 检测到在src目录运行，项目根目录: {project_root}")
+    else:
+        # 在项目根目录运行
+        project_root = current_file.parent
+        print(f"🔍 检测到在项目根目录运行: {project_root}")
+    
+    # 切换到项目根目录
+    os.chdir(project_root)
+    print(f"📁 当前工作目录: {os.getcwd()}")
+    
+    # 检查必需文件
+    required_files = ['config.json', 'requirements.txt']
+    missing_files = []
+    
+    for file in required_files:
+        if not Path(file).exists():
+            missing_files.append(file)
+    
+    if missing_files:
+        print(f"❌ 缺少必需文件: {missing_files}")
+        
+        # 尝试从示例创建配置文件
+        if 'config.json' in missing_files and Path('config/config.json.example').exists():
+            import shutil
+            shutil.copy('config/config.json.example', 'config.json')
+            print("✅ 已从示例创建config.json，请编辑配置信息")
+            missing_files.remove('config.json')
+        
+        if missing_files:
+            print(f"❌ 仍缺少文件: {missing_files}")
+            sys.exit(1)
+    
+    print("✅ 项目路径设置完成")
+    return project_root
+
+# 设置项目路径
+if __name__ == '__main__':
+    PROJECT_ROOT = setup_project_paths()
+
+# ====== 主程序导入 ======
 import asyncio
 import cloudscraper
 import time
 import logging
 import json
-import os
 import random
 import urllib.parse
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
-from pathlib import Path
 import aiofiles
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,7 +81,7 @@ from telegram.ext import (
     filters
 )
 
-
+# ====== 数据类定义 ======
 @dataclass
 class MonitorItem:
     """监控项数据类"""
@@ -35,37 +94,88 @@ class MonitorItem:
     status: Optional[bool] = None
     notification_count: int = 0
 
-
 @dataclass
 class Config:
-    """配置数据类"""
+    """配置数据类 - 支持所有可能的配置字段"""
     bot_token: str
     chat_id: str
     check_interval: int = 300
     max_notifications: int = 3
     request_timeout: int = 30
     retry_delay: int = 60
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    proxy: Optional[str] = None
+    debug: bool = False
+    log_level: str = "INFO"
+    
+    def __post_init__(self):
+        """初始化后处理"""
+        # 确保必要字段不为空
+        if not self.bot_token or self.bot_token == "YOUR_TELEGRAM_BOT_TOKEN":
+            raise ValueError("请配置正确的Telegram Bot Token")
+        
+        if not self.chat_id or self.chat_id == "YOUR_TELEGRAM_CHAT_ID":
+            raise ValueError("请配置正确的Telegram Chat ID")
 
-
+# ====== 配置管理器 ======
 class ConfigManager:
     """配置管理器"""
     
     def __init__(self, config_file: str = "config.json"):
         self.config_file = Path(config_file)
         self._config = None
+        self.logger = logging.getLogger(__name__)
     
     def load_config(self) -> Config:
         """加载配置"""
         try:
             if not self.config_file.exists():
+                self.logger.error(f"配置文件 {self.config_file} 不存在")
+                print(f"\n❌ 配置文件不存在: {self.config_file}")
+                print("📝 请确保config.json文件存在并包含正确的配置信息")
+                print("\n配置文件格式示例:")
+                print('''{
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID",
+    "check_interval": 300,
+    "max_notifications": 3,
+    "request_timeout": 30,
+    "retry_delay": 60
+}''')
                 raise FileNotFoundError(f"配置文件 {self.config_file} 不存在")
             
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self._config = Config(**data)
+                
+                # 验证必需字段
+                required_fields = ['bot_token', 'chat_id']
+                missing_fields = [field for field in required_fields if not data.get(field)]
+                
+                if missing_fields:
+                    raise ValueError(f"配置文件缺少必需字段: {missing_fields}")
+                
+                # 过滤掉不支持的字段，但保留所有定义的字段
+                valid_fields = {field.name for field in Config.__dataclass_fields__.values()}
+                filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+                
+                # 如果有额外字段，记录警告
+                extra_fields = set(data.keys()) - valid_fields
+                if extra_fields:
+                    self.logger.warning(f"配置文件中包含未知字段，已忽略: {extra_fields}")
+                    print(f"⚠️ 配置文件中包含未知字段，已忽略: {extra_fields}")
+                
+                self._config = Config(**filtered_data)
+                self.logger.info("配置文件加载成功")
+                print("✅ 配置文件加载成功")
                 return self._config
+                
+        except json.JSONDecodeError as e:
+            self.logger.error(f"配置文件JSON格式错误: {e}")
+            print(f"❌ 配置文件JSON格式错误: {e}")
+            raise
         except Exception as e:
-            logging.error(f"加载配置文件失败: {e}")
+            self.logger.error(f"加载配置文件失败: {e}")
+            print(f"❌ 加载配置文件失败: {e}")
             raise
     
     def save_config(self, config: Config) -> None:
@@ -74,8 +184,9 @@ class ConfigManager:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(asdict(config), f, ensure_ascii=False, indent=4)
             self._config = config
+            self.logger.info("配置文件保存成功")
         except Exception as e:
-            logging.error(f"保存配置文件失败: {e}")
+            self.logger.error(f"保存配置文件失败: {e}")
             raise
     
     @property
@@ -85,19 +196,21 @@ class ConfigManager:
             self._config = self.load_config()
         return self._config
 
-
+# ====== 数据管理器 ======
 class DataManager:
     """数据管理器"""
     
     def __init__(self, data_file: str = "urls.json"):
         self.data_file = Path(data_file)
         self._monitor_items = {}
+        self.logger = logging.getLogger(__name__)
         self._ensure_data_file()
     
     def _ensure_data_file(self) -> None:
         """确保数据文件存在"""
         if not self.data_file.exists():
             self.data_file.write_text('{}', encoding='utf-8')
+            self.logger.info(f"创建数据文件: {self.data_file}")
     
     async def load_monitor_items(self) -> Dict[str, MonitorItem]:
         """异步加载监控项"""
@@ -119,10 +232,10 @@ class DataManager:
                         notification_count=item_data.get('notification_count', 0)
                     )
                 
-                logging.info(f"成功加载 {len(self._monitor_items)} 个监控项")
+                self.logger.info(f"成功加载 {len(self._monitor_items)} 个监控项")
                 return self._monitor_items
         except Exception as e:
-            logging.error(f"加载数据文件失败: {e}")
+            self.logger.error(f"加载数据文件失败: {e}")
             return {}
     
     async def save_monitor_items(self) -> None:
@@ -143,7 +256,7 @@ class DataManager:
             async with aiofiles.open(self.data_file, 'w', encoding='utf-8') as f:
                 await f.write(json.dumps(data, ensure_ascii=False, indent=4))
         except Exception as e:
-            logging.error(f"保存数据文件失败: {e}")
+            self.logger.error(f"保存数据文件失败: {e}")
             raise
     
     def add_monitor_item(self, name: str, url: str, config: str = "") -> str:
@@ -157,6 +270,7 @@ class DataManager:
             created_at=datetime.now().isoformat()
         )
         self._monitor_items[item_id] = item
+        self.logger.info(f"添加监控项: {name} - {url}")
         return item_id
     
     def remove_monitor_item(self, url: str) -> bool:
@@ -164,6 +278,7 @@ class DataManager:
         for item_id, item in list(self._monitor_items.items()):
             if item.url == url:
                 del self._monitor_items[item_id]
+                self.logger.info(f"删除监控项: {url}")
                 return True
         return False
     
@@ -188,7 +303,7 @@ class DataManager:
         """获取所有监控项"""
         return self._monitor_items
 
-
+# ====== 库存检查器 ======
 class StockChecker:
     """库存检查器"""
     
@@ -204,9 +319,9 @@ class StockChecker:
                 'browser': 'chrome',
                 'platform': 'windows',
                 'mobile': False,
-                'custom': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'custom': self.config.user_agent
             },
-            debug=False
+            debug=self.config.debug
         )
     
     def _clean_url(self, url: str) -> str:
@@ -232,7 +347,7 @@ class StockChecker:
     def _get_headers(self) -> Dict[str, str]:
         """获取请求头"""
         return {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': self.config.user_agent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9,zh-CN,zh;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -337,7 +452,7 @@ class StockChecker:
             self.logger.error(f"检查库存失败 {url}: {e}")
             return None, f"检查失败: {str(e)}"
 
-
+# ====== Telegram机器人 ======
 class TelegramBot:
     """Telegram机器人"""
     
@@ -352,13 +467,18 @@ class TelegramBot:
         try:
             self.app = Application.builder().token(self.config.bot_token).build()
             await self.app.initialize()
-            await self.app.bot.get_me()
+            bot_info = await self.app.bot.get_me()
+            self.logger.info(f"Telegram Bot 初始化成功: @{bot_info.username}")
+            print(f"✅ Telegram Bot连接成功: @{bot_info.username}")
+            
             self._setup_handlers()
             await self.app.start()
             await self.app.updater.start_polling()
-            self.logger.info("Telegram Bot 初始化成功")
+            
         except Exception as e:
             self.logger.error(f"Telegram Bot 初始化失败: {e}")
+            print(f"❌ Telegram Bot初始化失败: {e}")
+            print("💡 请检查bot_token是否正确")
             raise
     
     def _setup_handlers(self) -> None:
@@ -493,9 +613,8 @@ class TelegramBot:
             await self.data_manager.save_monitor_items()
             
             # 立即检查状态
-            from . import StockChecker  # 避免循环导入
-            checker = StockChecker(self.config)
-            stock_available, error = await checker.check_stock(url)
+            stock_checker = StockChecker(self.config)
+            stock_available, error = await stock_checker.check_stock(url)
             
             if error:
                 status_text = f"❗ 检查状态时出错: {error}"
@@ -597,6 +716,7 @@ class TelegramBot:
         try:
             if self.app and self.app.bot:
                 await self.app.bot.send_message(chat_id=self.config.chat_id, text=message)
+                self.logger.info("Telegram通知发送成功")
         except Exception as e:
             self.logger.error(f"发送通知失败: {e}")
     
@@ -607,10 +727,11 @@ class TelegramBot:
                 await self.app.updater.stop()
                 await self.app.stop()
                 await self.app.shutdown()
+                self.logger.info("Telegram Bot已关闭")
         except Exception as e:
             self.logger.error(f"关闭机器人失败: {e}")
 
-
+# ====== 主监控类 ======
 class VPSMonitor:
     """主监控类"""
     
@@ -625,9 +746,14 @@ class VPSMonitor:
     async def initialize(self) -> None:
         """初始化监控器"""
         try:
+            print("🔧 初始化监控器...")
+            
             # 加载配置和数据
             config = self.config_manager.load_config()
+            print("✅ 配置文件加载成功")
+            
             await self.data_manager.load_monitor_items()
+            print("✅ 监控数据加载成功")
             
             # 初始化组件
             self.stock_checker = StockChecker(config)
@@ -637,8 +763,11 @@ class VPSMonitor:
             await self.telegram_bot.initialize()
             
             self.logger.info("监控器初始化完成")
+            print("✅ 监控器初始化完成")
+            
         except Exception as e:
             self.logger.error(f"监控器初始化失败: {e}")
+            print(f"❌ 监控器初始化失败: {e}")
             raise
     
     async def _perform_startup_check(self) -> None:
@@ -646,12 +775,15 @@ class VPSMonitor:
         items = self.data_manager.monitor_items
         if not items:
             await self.telegram_bot.send_notification("⚠️ 当前没有监控商品，请使用 /add 添加")
+            print("⚠️ 当前没有监控商品")
             return
         
+        print(f"🔍 开始检查 {len(items)} 个监控项...")
         await self.telegram_bot.send_notification("🔄 正在进行启动检查...")
         
         for item in items.values():
             try:
+                print(f"检查: {item.name}")
                 stock_available, error = await self.stock_checker.check_stock(item.url)
                 
                 message = f"📦 {item.name}\n🔗 {item.url}\n"
@@ -660,23 +792,28 @@ class VPSMonitor:
                 
                 if error:
                     message += f"❗ 检查失败: {error}"
+                    print(f"  ❌ 检查失败: {error}")
                 else:
                     status = "🟢 有货" if stock_available else "🔴 无货"
                     message += f"📊 状态：{status}"
+                    print(f"  ✅ 状态：{status}")
                     self.data_manager.update_monitor_item_status(item.url, stock_available, 0)
                 
                 await self.telegram_bot.send_notification(message)
                 
             except Exception as e:
                 self.logger.error(f"启动检查失败 {item.url}: {e}")
+                print(f"  ❌ 检查异常: {e}")
                 continue
         
         await self.data_manager.save_monitor_items()
         await self.telegram_bot.send_notification("✅ 启动检查完成")
+        print("✅ 启动检查完成")
     
     async def _monitor_loop(self) -> None:
         """主监控循环"""
         config = self.config_manager.config
+        print(f"🔄 开始监控循环，检查间隔: {config.check_interval}秒")
         
         while self._running:
             try:
@@ -684,6 +821,8 @@ class VPSMonitor:
                 if not items:
                     await asyncio.sleep(config.check_interval)
                     continue
+                
+                print(f"🔍 执行定期检查 ({len(items)} 个项目)")
                 
                 for item in items.values():
                     if not self._running:
@@ -738,8 +877,10 @@ class VPSMonitor:
         
         if stock_available:
             message += "📊 状态：🟢 补货啦！商品现在有货"
+            print(f"🎉 {item.name} 现在有货！")
         else:
             message += "📊 状态：🔴 已经无货"
+            print(f"📉 {item.name} 已无货")
         
         await self.telegram_bot.send_notification(message)
     
@@ -758,15 +899,17 @@ class VPSMonitor:
     async def start(self) -> None:
         """启动监控"""
         try:
+            print("🚀 启动VPS监控系统 v1.0...")
             await self.initialize()
             
             # 发送启动通知
             config = self.config_manager.config
             startup_message = (
-                "🚀 VPS监控程序已启动\n"
+                "🚀 VPS监控程序 v1.0 已启动\n"
                 f"⏰ 检查间隔：{config.check_interval}秒\n"
                 f"📢 最大通知次数：{config.max_notifications}次\n\n"
-                "💡 使用 /start 开始操作"
+                "💡 使用 /start 开始操作\n"
+                "👨‍💻 作者: kure29 | https://kure29.com"
             )
             await self.telegram_bot.send_notification(startup_message)
             
@@ -775,11 +918,14 @@ class VPSMonitor:
             
             # 开始监控循环
             self._running = True
+            print("✅ 监控系统启动成功，按Ctrl+C停止")
             await self._monitor_loop()
             
         except KeyboardInterrupt:
+            print("\n🛑 收到停止信号")
             self.logger.info("收到停止信号")
         except Exception as e:
+            print(f"❌ 监控运行失败: {e}")
             self.logger.error(f"监控运行失败: {e}")
             raise
         finally:
@@ -787,12 +933,14 @@ class VPSMonitor:
     
     async def stop(self) -> None:
         """停止监控"""
+        print("🛑 正在停止监控系统...")
         self._running = False
         if self.telegram_bot:
             await self.telegram_bot.shutdown()
         self.logger.info("监控程序已停止")
+        print("✅ 监控程序已停止")
 
-
+# ====== 日志设置 ======
 def setup_logging() -> None:
     """设置日志"""
     logging.basicConfig(
@@ -804,21 +952,31 @@ def setup_logging() -> None:
         ]
     )
 
-
+# ====== 主函数 ======
 async def main():
     """主函数"""
     setup_logging()
     logger = logging.getLogger(__name__)
+    
+    print("🤖 VPS监控系统 v1.0")
+    print("👨‍💻 作者: kure29")
+    print("🌐 网站: https://kure29.com")
+    print("=" * 40)
     
     try:
         monitor = VPSMonitor()
         await monitor.start()
     except KeyboardInterrupt:
         logger.info("程序被用户中断")
+        print("\n✅ 程序已停止")
     except Exception as e:
         logger.error(f"程序发生错误: {e}")
-        raise
-
+        print(f"❌ 程序发生错误: {e}")
+        print("\n💡 常见解决方案:")
+        print("1. 检查config.json文件是否存在且配置正确")
+        print("2. 确认Telegram Bot Token和Chat ID有效")
+        print("3. 检查网络连接")
+        print("4. 查看monitor.log获取详细错误信息")
 
 if __name__ == '__main__':
     try:
