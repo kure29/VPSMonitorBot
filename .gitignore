@@ -1,0 +1,138 @@
+# VPSMonitorBot .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Configuration files (contains sensitive data)
+config.json
+*.env
+.env
+
+# Data files
+urls.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+logs/
+monitor.log
+
+# Backup files
+backup/
+*.bak
+*.backup
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Docker
+.dockerignore
+
+# Node.js (if using for web components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Installation marker
+.initialized
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+
+# Custom ignore patterns
+data/
+!data/.gitkeep
+cache/
+!cache/.gitkeep
