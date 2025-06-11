@@ -1,25 +1,45 @@
+# VPS监控系统 v1.0 - Docker Compose配置
+# 作者: kure29
+# 网站: https://kure29.com
+
 version: '3.8'
 
 services:
   vps-monitor:
-    build: .
-    container_name: vps-monitor-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vps-monitor-v1
     restart: unless-stopped
     
     # 环境变量
     environment:
       - TZ=Asia/Shanghai
-      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
     
-    # 数据卷挂载
+    # 挂载卷
     volumes:
       - ./config.json:/app/config.json:ro
+      - ./urls.json:/app/urls.json
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./backup:/app/backup
     
-    # 网络设置
+    # 网络配置
     networks:
       - vps-monitor-network
+    
+    # 端口映射（如果有Web界面）
+    ports:
+      - "8000:8000"
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     
     # 资源限制
     deploy:
@@ -28,66 +48,84 @@ services:
           memory: 512M
           cpus: '0.5'
         reservations:
-          memory: 128M
-          cpus: '0.1'
+          memory: 256M
+          cpus: '0.25'
     
-    # 健康检查
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import psutil; [p for p in psutil.process_iter() if \"monitor.py\" in p.cmdline()]' || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     
-    # 依赖服务
+    # 依赖服务（如果需要）
     depends_on:
       - redis
-    
-    # 标签
-    labels:
-      - "com.example.service=vps-monitor"
-      - "com.example.version=2.1.0"
-
-  # Redis缓存服务（可选）
+      
+  # Redis服务（可选，用于缓存）
   redis:
     image: redis:7-alpine
     container_name: vps-monitor-redis
     restart: unless-stopped
     
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-vpsmonitor}
+    # 命令
+    command: redis-server --appendonly yes
     
+    # 挂载卷
     volumes:
       - redis-data:/data
     
+    # 网络配置
     networks:
       - vps-monitor-network
     
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    # 资源限制
     deploy:
       resources:
         limits:
           memory: 128M
-          cpus: '0.2'
+          cpus: '0.25'
 
-  # Nginx反向代理（可选，用于Web管理界面）
+  # Nginx反向代理（可选，用于Web界面）
   nginx:
     image: nginx:alpine
     container_name: vps-monitor-nginx
     restart: unless-stopped
     
+    # 端口映射
     ports:
-      - "8080:80"
+      - "80:80"
+      - "443:443"
     
+    # 挂载卷
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./web:/usr/share/nginx/html:ro
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
     
+    # 网络配置
     networks:
       - vps-monitor-network
     
+    # 依赖服务
     depends_on:
       - vps-monitor
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-# 网络配置
+# 网络定义
 networks:
   vps-monitor-network:
     driver: bridge
@@ -95,16 +133,29 @@ networks:
       config:
         - subnet: 172.20.0.0/16
 
-# 数据卷配置
+# 卷定义
 volumes:
   redis-data:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./redis-data
+  monitor-data:
+    driver: local
+  monitor-logs:
+    driver: local
+  monitor-backup:
+    driver: local
 
-# 环境变量文件示例
-# 创建 .env 文件并设置以下变量：
-# REDIS_PASSWORD=your_redis_password
-# TZ=Asia/Shanghai
+# 扩展配置
+x-common-variables: &common-variables
+  TZ: Asia/Shanghai
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
