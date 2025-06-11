@@ -19,7 +19,7 @@ readonly CYAN='\033[0;36m'
 readonly NC='\033[0m'
 
 # 配置变量
-readonly REPO_URL="https://github.com/kure29s/VPSMonitorBot.git"
+readonly REPO_URL="https://github.com/kure29/VPSMonitorBot.git"
 readonly INSTALL_DIR="/opt/vps-monitor"
 readonly SERVICE_USER="vpsmonitor"
 readonly VERSION="v2.1.0"
@@ -184,7 +184,7 @@ download_project() {
     else
         log_warn "Git克隆失败，尝试下载压缩包..."
         
-        local archive_url="https://github.com/kure29s/VPSMonitorBot/archive/refs/tags/${VERSION}.tar.gz"
+        local archive_url="https://github.com/kure29/VPSMonitorBot/archive/refs/tags/${VERSION}.tar.gz"
         local temp_file=$(mktemp)
         
         if curl -L "$archive_url" -o "$temp_file"; then
@@ -342,7 +342,7 @@ show_post_install_info() {
     echo -e "\n${YELLOW}📖 快速指南：${NC}"
     echo -e "• 获取Bot Token: 向 @BotFather 发送 /newbot"
     echo -e "• 获取Chat ID: 向 @userinfobot 发送 /start"
-    echo -e "• 文档地址: https://github.com/kure29s/VPSMonitorBot"
+    echo -e "• 文档地址: https://github.com/kure29/VPSMonitorBot"
     echo -e "• 演示Bot: @JQ_VPSMonitorBot"
     
     echo -e "\n${GREEN}安装日志已保存到: $project_dir/install.log${NC}"
@@ -444,7 +444,7 @@ main() {
 EOF
         echo -e "${NC}"
         echo -e "${BLUE}VPS库存监控系统 ${VERSION} 安装程序${NC}"
-        echo -e "${BLUE}作者: kure29 | 网站: https://kure29s.com${NC}\n"
+        echo -e "${BLUE}作者: kure29 | 网站: https://kure29.com${NC}\n"
     fi
     
     log_info "开始安装 VPS监控系统 ${VERSION}"
