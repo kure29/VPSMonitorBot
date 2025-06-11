@@ -22,7 +22,7 @@ readonly NC='\033[0m'
 readonly REPO_URL="https://github.com/kure29/VPSMonitorBot.git"
 readonly INSTALL_DIR="/opt/vps-monitor"
 readonly SERVICE_USER="vpsmonitor"
-readonly VERSION="v2.1.0"
+readonly VERSION="v1.0"
 
 # 全局变量
 INSTALL_MODE="local"
