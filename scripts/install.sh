@@ -70,13 +70,16 @@ check_system_requirements() {
         local python_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         local min_version="3.7"
         
-        if awk "BEGIN {exit !($python_version >= $min_version)}"; then
+        # 修复版本比较逻辑
+        if python3 -c "import sys; exit(0 if sys.version_info >= (3, 7) else 1)"; then
             log_info "Python版本检查通过: $python_version"
         else
-            error_exit "Python版本过低，需要3.7或更高版本，当前版本: $python_version"
+            log_warn "Python版本过低，需要3.7或更高版本，当前版本: $python_version"
+            return 1
         fi
     else
         log_warn "未找到Python3，将在依赖安装阶段安装"
+        return 1
     fi
     
     # 检查curl
