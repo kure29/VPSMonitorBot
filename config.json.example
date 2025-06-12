@@ -1,8 +1,10 @@
 {
     "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
     "chat_id": "YOUR_TELEGRAM_CHAT_ID",
-    "check_interval": 300,
-    "max_notifications": 3,
+    "admin_ids": ["123456789", "987654321"],
+    "check_interval": 180,
+    "notification_aggregation_interval": 180,
+    "notification_cooldown": 600,
     "request_timeout": 30,
     "retry_delay": 60,
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
