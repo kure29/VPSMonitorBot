@@ -1,5 +1,5 @@
 #!/bin/bash
-# VPS监控系统 v1.0 - 主管理菜单
+# VPS监控系统 v2.0 - 主管理菜单
 # 作者: kure29
 # 网站: https://kure29.com
 
@@ -44,7 +44,7 @@ show_banner() {
    ╚═══╝  ╚═╝     ╚══════╝    ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝
 EOF
     echo -e "${NC}"
-    echo -e "${PURPLE}VPS库存监控系统 v1.0${NC}"
+    echo -e "${PURPLE}VPS库存监控系统 v2.0 - 数据库优化版${NC}"
     echo -e "${CYAN}作者: kure29 | 网站: https://kure29.com${NC}"
     echo ""
 }
@@ -55,7 +55,6 @@ check_python() {
         local python_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         log_info "检测到Python版本: $python_version"
         
-        # 修复版本比较逻辑
         if python3 -c "import sys; exit(0 if sys.version_info >= (3, 7) else 1)"; then
             return 0
         else
@@ -63,7 +62,7 @@ check_python() {
             return 1
         fi
     else
-        log_warn "未找到Python3，将在依赖安装阶段安装"
+        log_warn "未找到Python3"
         return 1
     fi
 }
@@ -147,6 +146,19 @@ check_config() {
     fi
 }
 
+# 检查数据库
+check_database() {
+    if [[ -f "vps_monitor.db" ]]; then
+        log_info "发现数据库文件: vps_monitor.db"
+        local size=$(du -h vps_monitor.db | cut -f1)
+        log_info "数据库大小: $size"
+        return 0
+    else
+        log_info "数据库文件不存在，将在首次运行时创建"
+        return 1
+    fi
+}
+
 # 初始化环境
 init_environment() {
     log_info "首次运行，正在初始化环境..."
@@ -180,6 +192,9 @@ init_environment() {
         log_warn "请编辑config.json文件配置Telegram信息"
     fi
     
+    # 检查数据库
+    check_database
+    
     log_info "环境初始化完成"
 }
 
@@ -211,8 +226,20 @@ get_process_info() {
 
 # 获取监控商品数量
 get_monitor_count() {
-    if [[ -f "urls.json" ]] && command -v jq >/dev/null 2>&1; then
-        jq 'length' urls.json 2>/dev/null || echo "0"
+    if [[ -f "vps_monitor.db" ]] && activate_venv; then
+        local count=$(python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM monitor_items WHERE enabled = 1')
+    result = cursor.fetchone()
+    print(result[0] if result else 0)
+    conn.close()
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+        echo "$count"
     else
         echo "0"
     fi
@@ -232,135 +259,12 @@ show_status() {
         echo -e "监控状态: ${RED}$status${NC}"
     fi
     echo "监控商品数: $monitor_count"
-}
-
-# 添加监控网址
-add_url() {
-    echo "添加监控网址"
-    echo "=============="
     
-    if ! activate_venv; then
-        return 1
+    # 显示数据库信息
+    if [[ -f "vps_monitor.db" ]]; then
+        local db_size=$(du -h vps_monitor.db | cut -f1)
+        echo "数据库大小: $db_size"
     fi
-    
-    echo -n "请输入商品名称: "
-    read -r name
-    
-    if [[ -z "$name" ]]; then
-        log_error "商品名称不能为空"
-        return 1
-    fi
-    
-    echo -n "请输入商品配置(可选): "
-    read -r config
-    
-    echo -n "请输入监控URL: "
-    read -r url
-    
-    if [[ -z "$url" ]]; then
-        log_error "URL不能为空"
-        return 1
-    fi
-    
-    if [[ ! "$url" =~ ^https?:// ]]; then
-        log_error "URL必须以http://或https://开头"
-        return 1
-    fi
-    
-    # 检查URL是否已存在
-    if [[ -f "urls.json" ]] && command -v jq >/dev/null 2>&1; then
-        if jq -e --arg url "$url" 'to_entries[] | select(.value.URL == $url)' urls.json >/dev/null 2>&1; then
-            log_error "该URL已在监控列表中"
-            return 1
-        fi
-    fi
-    
-    # 添加到JSON文件
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local id=$(date +%s)
-    
-    if [[ ! -f "urls.json" ]]; then
-        echo '{}' > urls.json
-    fi
-    
-    if command -v jq >/dev/null 2>&1; then
-        jq --arg id "$id" --arg name "$name" --arg url "$url" --arg config "$config" --arg time "$timestamp" \
-           '.[$id] = {"名称": $name, "URL": $url, "配置": $config, "created_at": $time}' urls.json > urls.json.tmp
-        mv urls.json.tmp urls.json
-        log_info "监控已添加: $name - $url"
-    else
-        log_error "需要安装jq工具来管理JSON文件"
-        return 1
-    fi
-}
-
-# 删除监控网址
-delete_url() {
-    echo "删除监控网址"
-    echo "=============="
-    
-    if [[ ! -f "urls.json" ]]; then
-        log_warn "没有监控的网址"
-        return 1
-    fi
-    
-    if ! command -v jq >/dev/null 2>&1; then
-        log_error "需要安装jq工具来管理JSON文件"
-        return 1
-    fi
-    
-    echo "当前监控的网址："
-    jq -r 'to_entries[] | "\(.key). \(.value.名称) - \(.value.URL)"' urls.json 2>/dev/null || {
-        log_error "读取监控列表失败"
-        return 1
-    }
-    
-    echo -n "请输入要删除的编号: "
-    read -r id
-    
-    if [[ -z "$id" ]]; then
-        log_error "编号不能为空"
-        return 1
-    fi
-    
-    if jq -e --arg id "$id" 'has($id)' urls.json >/dev/null 2>&1; then
-        jq --arg id "$id" 'del(.[$id])' urls.json > urls.json.tmp
-        mv urls.json.tmp urls.json
-        log_info "监控已删除"
-    else
-        log_error "找不到指定的监控项"
-        return 1
-    fi
-}
-
-# 显示所有监控网址
-show_urls() {
-    echo "所有监控网址"
-    echo "=============="
-    
-    if [[ ! -f "urls.json" ]]; then
-        log_warn "没有监控的网址"
-        return 1
-    fi
-    
-    if ! command -v jq >/dev/null 2>&1; then
-        log_error "需要安装jq工具来查看JSON文件"
-        return 1
-    fi
-    
-    local count=$(jq 'length' urls.json 2>/dev/null || echo "0")
-    if [[ "$count" == "0" ]]; then
-        log_warn "没有监控的网址"
-        return 1
-    fi
-    
-    echo "共有 $count 个监控项："
-    echo ""
-    
-    jq -r 'to_entries[] | "ID: \(.key)\n名称: \(.value.名称)\nURL: \(.value.URL)\n配置: \(.value.配置 // "无")\n创建时间: \(.value.created_at // "未知")\n"' urls.json 2>/dev/null || {
-        log_error "读取监控列表失败"
-        return 1
-    }
 }
 
 # 配置Telegram信息
@@ -397,15 +301,28 @@ configure_telegram() {
         return 1
     fi
     
+    # 可选配置
+    echo ""
+    echo "可选配置（留空使用默认值）："
+    echo -n "频道ID（用于发送通知，留空则发送到私聊）: "
+    read -r channel_id
+    
+    echo -n "管理员ID（多个ID用逗号分隔，留空则所有人可管理）: "
+    read -r admin_ids
+    
     # 创建配置文件
     cat > config.json << EOF
 {
     "bot_token": "$bot_token",
     "chat_id": "$chat_id",
-    "check_interval": 300,
-    "max_notifications": 3,
+    "channel_id": "$channel_id",
+    "admin_ids": [$(echo "$admin_ids" | sed 's/,/", "/g' | sed 's/.*/\"&\"/' | sed 's/\"\"//g')],
+    "check_interval": 180,
+    "notification_aggregation_interval": 180,
+    "notification_cooldown": 600,
     "request_timeout": 30,
-    "retry_delay": 60
+    "retry_delay": 60,
+    "items_per_page": 10
 }
 EOF
     
@@ -416,29 +333,42 @@ EOF
     read -r test_conn
     
     if [[ "$test_conn" == "y" || "$test_conn" == "Y" ]]; then
-        log_info "测试Telegram连接..."
-        if activate_venv && python3 -c "
+        test_telegram_connection
+    fi
+}
+
+# 测试Telegram连接
+test_telegram_connection() {
+    log_info "测试Telegram连接..."
+    
+    if activate_venv; then
+        python3 -c "
 import requests
 import json
 
-config = json.load(open('config.json'))
-resp = requests.get(f'https://api.telegram.org/bot{config[\"bot_token\"]}/getMe', timeout=10)
-if resp.json().get('ok'):
-    print('✅ Telegram Bot连接成功')
-    # 发送测试消息
-    test_resp = requests.post(f'https://api.telegram.org/bot{config[\"bot_token\"]}/sendMessage', 
-                             json={'chat_id': config['chat_id'], 'text': '🤖 VPS监控系统测试消息'}, timeout=10)
-    if test_resp.json().get('ok'):
-        print('✅ 测试消息发送成功')
+try:
+    config = json.load(open('config.json'))
+    resp = requests.get(f'https://api.telegram.org/bot{config[\"bot_token\"]}/getMe', timeout=10)
+    
+    if resp.json().get('ok'):
+        print('✅ Telegram Bot连接成功')
+        
+        # 发送测试消息
+        test_resp = requests.post(
+            f'https://api.telegram.org/bot{config[\"bot_token\"]}/sendMessage', 
+            json={'chat_id': config['chat_id'], 'text': '🤖 VPS监控系统 v2.0 测试消息'}, 
+            timeout=10
+        )
+        
+        if test_resp.json().get('ok'):
+            print('✅ 测试消息发送成功')
+        else:
+            print('❌ 测试消息发送失败，请检查Chat ID')
     else:
-        print('❌ 测试消息发送失败，请检查Chat ID')
-else:
-    print('❌ Telegram Bot连接失败，请检查Token')
-" 2>/dev/null; then
-            log_info "Telegram配置测试完成"
-        else
-            log_error "Telegram配置测试失败"
-        fi
+        print('❌ Telegram Bot连接失败，请检查Token')
+except Exception as e:
+    print(f'❌ 测试失败: {e}')
+" 2>&1
     fi
 }
 
@@ -547,6 +477,40 @@ check_monitor_status() {
             tail -n 5 monitor.log | grep -i error || echo "没有发现错误"
         fi
     fi
+    
+    # 显示数据库统计
+    if [[ -f "vps_monitor.db" ]] && activate_venv; then
+        echo ""
+        echo "数据库统计:"
+        echo "=========="
+        python3 -c "
+import sqlite3
+from datetime import datetime, timedelta
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 获取最近24小时的检查统计
+    since = (datetime.now() - timedelta(days=1)).isoformat()
+    cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ?', (since,))
+    checks_24h = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ? AND status = 1', (since,))
+    success_24h = cursor.fetchone()[0]
+    
+    print(f'最近24小时检查: {checks_24h} 次')
+    print(f'检查成功次数: {success_24h} 次')
+    
+    if checks_24h > 0:
+        success_rate = (success_24h / checks_24h) * 100
+        print(f'成功率: {success_rate:.1f}%')
+    
+    conn.close()
+except Exception as e:
+    print(f'获取统计失败: {e}')
+" 2>&1
+    fi
 }
 
 # 查看监控日志
@@ -598,6 +562,242 @@ view_logs() {
     esac
 }
 
+# 数据库管理
+manage_database() {
+    echo "数据库管理"
+    echo "=========="
+    
+    if [[ ! -f "vps_monitor.db" ]]; then
+        log_warn "数据库文件不存在"
+        return 1
+    fi
+    
+    echo "1. 查看数据库信息"
+    echo "2. 备份数据库"
+    echo "3. 导出数据到JSON"
+    echo "4. 从JSON导入数据"
+    echo "5. 清理历史数据"
+    echo -n "请选择操作 (1-5): "
+    read -r choice
+    
+    case $choice in
+        1)
+            view_database_info
+            ;;
+        2)
+            backup_database
+            ;;
+        3)
+            export_database
+            ;;
+        4)
+            import_database
+            ;;
+        5)
+            cleanup_database
+            ;;
+        *)
+            log_error "无效选择"
+            ;;
+    esac
+}
+
+# 查看数据库信息
+view_database_info() {
+    echo ""
+    echo "数据库信息:"
+    echo "==========="
+    
+    local db_size=$(du -h vps_monitor.db | cut -f1)
+    echo "文件大小: $db_size"
+    
+    if activate_venv; then
+        python3 -c "
+import sqlite3
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 获取表信息
+    cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")
+    tables = cursor.fetchall()
+    print(f'\\n数据表: {len(tables)} 个')
+    for table in tables:
+        cursor.execute(f'SELECT COUNT(*) FROM {table[0]}')
+        count = cursor.fetchone()[0]
+        print(f'  - {table[0]}: {count} 条记录')
+    
+    conn.close()
+except Exception as e:
+    print(f'读取数据库失败: {e}')
+" 2>&1
+    fi
+}
+
+# 备份数据库
+backup_database() {
+    echo ""
+    local backup_file="backup/vps_monitor_$(date +%Y%m%d_%H%M%S).db"
+    
+    # 创建备份目录
+    mkdir -p backup
+    
+    if cp vps_monitor.db "$backup_file"; then
+        log_info "数据库备份成功: $backup_file"
+    else
+        log_error "数据库备份失败"
+    fi
+}
+
+# 导出数据库
+export_database() {
+    echo ""
+    local export_file="export/vps_monitor_export_$(date +%Y%m%d_%H%M%S).json"
+    
+    # 创建导出目录
+    mkdir -p export
+    
+    if activate_venv; then
+        python3 -c "
+import sys
+sys.path.append('.')
+from database_manager import DatabaseManager
+import asyncio
+
+async def export():
+    db = DatabaseManager()
+    await db.initialize()
+    success = await db.export_to_json('$export_file')
+    if success:
+        print('✅ 数据导出成功: $export_file')
+    else:
+        print('❌ 数据导出失败')
+
+asyncio.run(export())
+" 2>&1
+    fi
+}
+
+# 导入数据库
+import_database() {
+    echo ""
+    echo -n "请输入要导入的JSON文件路径: "
+    read -r import_file
+    
+    if [[ ! -f "$import_file" ]]; then
+        log_error "文件不存在: $import_file"
+        return 1
+    fi
+    
+    if activate_venv; then
+        python3 -c "
+import sys
+sys.path.append('.')
+from database_manager import DatabaseManager
+import asyncio
+
+async def import_data():
+    db = DatabaseManager()
+    await db.initialize()
+    success = await db.import_from_json('$import_file')
+    if success:
+        print('✅ 数据导入成功')
+    else:
+        print('❌ 数据导入失败')
+
+asyncio.run(import_data())
+" 2>&1
+    fi
+}
+
+# 清理数据库
+cleanup_database() {
+    echo ""
+    echo -n "清理多少天前的历史记录？(默认90天): "
+    read -r days
+    
+    if [[ -z "$days" ]]; then
+        days=90
+    fi
+    
+    if activate_venv; then
+        python3 -c "
+import sys
+sys.path.append('.')
+from database_manager import DatabaseManager
+import asyncio
+
+async def cleanup():
+    db = DatabaseManager()
+    await db.initialize()
+    deleted = await db.cleanup_old_history(days=$days)
+    print(f'✅ 已清理 {deleted} 条历史记录')
+
+asyncio.run(cleanup())
+" 2>&1
+    fi
+}
+
+# 从旧版本迁移数据
+migrate_from_json() {
+    echo "从JSON迁移到数据库"
+    echo "=================="
+    
+    if [[ ! -f "urls.json" ]]; then
+        log_warn "未找到urls.json文件"
+        return 1
+    fi
+    
+    log_info "开始迁移数据..."
+    
+    if activate_venv; then
+        python3 -c "
+import json
+import asyncio
+from database_manager import DatabaseManager
+
+async def migrate():
+    try:
+        # 读取旧数据
+        with open('urls.json', 'r', encoding='utf-8') as f:
+            old_data = json.load(f)
+        
+        # 初始化数据库
+        db = DatabaseManager()
+        await db.initialize()
+        
+        # 迁移数据
+        migrated = 0
+        for item_id, item_data in old_data.items():
+            name = item_data.get('名称', '')
+            url = item_data.get('URL', '')
+            config = item_data.get('配置', '')
+            
+            # 检查是否已存在
+            existing = await db.get_monitor_item_by_url(url)
+            if not existing:
+                await db.add_monitor_item(name, url, config)
+                migrated += 1
+                print(f'  ✅ 已迁移: {name}')
+            else:
+                print(f'  ⏭️  跳过已存在: {name}')
+        
+        print(f'\\n✅ 迁移完成，共迁移 {migrated} 个商品')
+        
+        # 备份旧文件
+        import shutil
+        shutil.copy('urls.json', 'urls.json.backup')
+        print('✅ 旧数据已备份到 urls.json.backup')
+        
+    except Exception as e:
+        print(f'❌ 迁移失败: {e}')
+
+asyncio.run(migrate())
+" 2>&1
+    fi
+}
+
 # 主菜单
 show_menu() {
     while true; do
@@ -605,15 +805,14 @@ show_menu() {
         show_banner
         show_status
         
-        echo " ============== VPS库存监控系统  ============== "
-        echo "1. 添加监控网址"
-        echo "2. 删除监控网址"
-        echo "3. 显示所有监控网址"
-        echo "4. 配置Telegram信息"
-        echo "5. 启动监控"
-        echo "6. 停止监控"
-        echo "7. 查看监控状态"
-        echo "8. 查看监控日志"
+        echo " ============== VPS库存监控系统 v2.0 ============== "
+        echo "1. 配置Telegram信息"
+        echo "2. 启动监控"
+        echo "3. 停止监控"
+        echo "4. 查看监控状态"
+        echo "5. 查看监控日志"
+        echo "6. 数据库管理"
+        echo "7. 从旧版本迁移数据"
         echo "0. 退出"
         echo "===================="
         
@@ -627,41 +826,37 @@ show_menu() {
         fi
         echo "===================="
         
-        echo -n "请选择操作 (0-8): "
+        echo -n "请选择操作 (0-7): "
         read -r choice
         
         case $choice in
             1)
                 echo ""
-                add_url
+                configure_telegram
                 ;;
             2)
                 echo ""
-                delete_url
+                start_monitor
                 ;;
             3)
                 echo ""
-                show_urls
+                stop_monitor
                 ;;
             4)
                 echo ""
-                configure_telegram
+                check_monitor_status
                 ;;
             5)
                 echo ""
-                start_monitor
+                view_logs
                 ;;
             6)
                 echo ""
-                stop_monitor
+                manage_database
                 ;;
             7)
                 echo ""
-                check_monitor_status
-                ;;
-            8)
-                echo ""
-                view_logs
+                migrate_from_json
                 ;;
             0)
                 echo ""
