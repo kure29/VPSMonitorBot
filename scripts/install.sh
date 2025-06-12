@@ -84,9 +84,9 @@ EOF
 # 检查系统类型
 detect_os() {
     if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        OS=$ID
-        OS_VERSION=$VERSION_ID
+        # 使用子shell避免污染当前环境
+        OS=$(source /etc/os-release && echo $ID)
+        OS_VERSION=$(source /etc/os-release && echo $VERSION_ID)
     elif [[ -f /etc/redhat-release ]]; then
         OS="centos"
     elif [[ -f /etc/debian_version ]]; then
@@ -312,8 +312,10 @@ generate_config() {
 {
     "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
     "chat_id": "YOUR_TELEGRAM_CHAT_ID",
-    "check_interval": 300,
-    "max_notifications": 3,
+    "admin_ids": [],
+    "check_interval": 180,
+    "notification_aggregation_interval": 180,
+    "notification_cooldown": 600,
     "request_timeout": 30,
     "retry_delay": 60
 }
