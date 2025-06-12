@@ -137,7 +137,7 @@ chmod +x scripts/install.sh
 🌍 Los Angeles（优化大陆线路）
 
 📡 **线路**：#优化线路 #9929 & #CMIN2  
-🔗 [立即抢购](https://clients.zgovps.com/?cmd=cart&action=add&affid=288&id=66)
+🔗 [立即抢购](https://clients.zgovps.com/?cmd=cart&action=add)
 
 🛒 **库存**：∞ #Available
 ```
