@@ -81,19 +81,35 @@ VPS监控系统 v${VERSION} 安装脚本
 EOF
 }
 
-# 检查系统类型
+# 检查系统类型 - 使用更安全的方法
 detect_os() {
     if [[ -f /etc/os-release ]]; then
-        # 使用子shell避免污染当前环境
-        OS=$(source /etc/os-release && echo $ID)
-        OS_VERSION=$(source /etc/os-release && echo $VERSION_ID)
+        # 使用grep安全提取值，避免source导致的readonly变量问题
+        OS=$(grep -E "^ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        OS_VERSION=$(grep -E "^VERSION_ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
     elif [[ -f /etc/redhat-release ]]; then
         OS="centos"
+        OS_VERSION=""
     elif [[ -f /etc/debian_version ]]; then
         OS="debian"
+        OS_VERSION=$(cat /etc/debian_version)
     else
         OS="unknown"
+        OS_VERSION=""
     fi
+    
+    # 标准化OS名称
+    case "$OS" in
+        ubuntu|debian|raspbian)
+            OS="debian"
+            ;;
+        centos|rhel|fedora|rocky|alma)
+            OS="centos"
+            ;;
+        arch|manjaro)
+            OS="arch"
+            ;;
+    esac
     
     log_debug "检测到操作系统: $OS $OS_VERSION"
 }
@@ -106,6 +122,7 @@ check_python_version() {
         # 修复版本比较逻辑
         if python3 -c "import sys; exit(0 if sys.version_info >= (3, 7) else 1)"; then
             log_info "Python版本检查通过: $python_version"
+            return 0
         else
             log_warn "Python版本过低，需要3.7或更高版本，当前版本: $python_version"
             return 1
@@ -121,20 +138,21 @@ install_system_deps() {
     log_info "安装系统依赖"
     
     case $OS in
-        ubuntu|debian)
+        debian)
             log_info "检测到Debian/Ubuntu系统"
             export DEBIAN_FRONTEND=noninteractive
-            apt update
-            apt install -y python3 python3-pip python3-venv git curl jq wget
+            apt-get update -y
+            apt-get install -y python3 python3-pip python3-venv git curl jq wget
             ;;
-        centos|rhel|rocky|alma)
+        centos)
             log_info "检测到CentOS/RHEL系统"
-            yum update -y
-            yum install -y python3 python3-pip git curl jq wget
-            # 对于较新的系统使用dnf
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y python3-venv
+                dnf update -y
+                dnf install -y python3 python3-pip python3-venv git curl jq wget
             else
+                yum update -y
+                yum install -y python3 python3-pip git curl jq wget
+                # CentOS 7可能需要手动安装virtualenv
                 pip3 install virtualenv
             fi
             ;;
@@ -146,6 +164,11 @@ install_system_deps() {
         *)
             log_warn "未识别的系统类型: $OS"
             log_info "请手动安装以下依赖: python3 python3-pip python3-venv git curl jq wget"
+            echo -n "是否继续? [y/N] "
+            read -r confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
             ;;
     esac
     
@@ -171,12 +194,15 @@ download_project() {
     fi
     
     log_info "从GitHub克隆项目..."
-    if git clone -b v${VERSION} "$GITHUB_REPO" "$target_dir" 2>/dev/null; then
+    if git clone "$GITHUB_REPO" "$target_dir" 2>/dev/null; then
         log_info "项目下载完成"
     else
         log_warn "Git克隆失败，尝试下载压缩包..."
         mkdir -p "$target_dir"
-        if curl -L "${GITHUB_REPO}/archive/v${VERSION}.tar.gz" | tar -xz -C "$target_dir" --strip-components=1; then
+        if curl -L "${GITHUB_REPO}/archive/main.zip" -o /tmp/vps-monitor.zip && \
+           unzip -q /tmp/vps-monitor.zip -d /tmp && \
+           mv /tmp/VPSMonitorBot-main/* "$target_dir/" && \
+           rm -rf /tmp/vps-monitor.zip /tmp/VPSMonitorBot-main; then
             log_info "压缩包下载完成"
         else
             log_error "下载失败，请检查网络连接或手动下载项目"
@@ -195,7 +221,12 @@ setup_python_env() {
     # 创建虚拟环境
     if [[ ! -d "venv" ]]; then
         log_info "创建Python虚拟环境..."
-        python3 -m venv venv
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -m venv venv
+        else
+            log_error "Python3未安装"
+            return 1
+        fi
     fi
     
     # 激活虚拟环境
@@ -231,7 +262,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=root
+User=$USER
 WorkingDirectory=$work_dir
 Environment=PATH=$work_dir/venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=$work_dir/venv/bin/python $work_dir/src/monitor.py
@@ -266,20 +297,9 @@ setup_docker() {
     # 检查Docker是否安装
     if ! command -v docker >/dev/null 2>&1; then
         log_info "安装Docker..."
-        case $OS in
-            ubuntu|debian)
-                curl -fsSL https://get.docker.com | sh
-                ;;
-            centos|rhel|rocky|alma)
-                yum install -y docker
-                systemctl start docker
-                systemctl enable docker
-                ;;
-            *)
-                log_error "请手动安装Docker"
-                return 1
-                ;;
-        esac
+        curl -fsSL https://get.docker.com | sh
+        systemctl start docker
+        systemctl enable docker
     fi
     
     # 检查docker-compose是否安装
@@ -337,10 +357,16 @@ setup_permissions() {
     cd "$work_dir"
     
     # 设置脚本执行权限
-    find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    if [[ -d "scripts" ]]; then
+        find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    fi
     
     # 创建必要目录
-    mkdir -p data logs backup
+    mkdir -p data logs backup web/static
+    
+    # 如果存在主脚本，设置执行权限
+    [[ -f "menu.sh" ]] && chmod +x menu.sh
+    [[ -f "src/monitor.py" ]] && chmod +x src/monitor.py
     
     log_info "权限设置完成"
 }
@@ -352,16 +378,29 @@ verify_installation() {
     local work_dir="$1"
     cd "$work_dir"
     
+    local errors=0
+    
     # 检查必要文件
-    local required_files=("src/monitor.py" "requirements.txt" "config.json")
-    for file in "${required_files[@]}"; do
-        if [[ -f "$file" ]]; then
-            log_debug "✓ $file"
-        else
-            log_error "✗ $file (缺失)"
-            return 1
-        fi
-    done
+    if [[ -f "src/monitor.py" ]] || [[ -f "monitor.py" ]]; then
+        log_debug "✓ 主程序文件存在"
+    else
+        log_error "✗ 主程序文件缺失"
+        ((errors++))
+    fi
+    
+    if [[ -f "requirements.txt" ]]; then
+        log_debug "✓ requirements.txt存在"
+    else
+        log_error "✗ requirements.txt缺失"
+        ((errors++))
+    fi
+    
+    if [[ -f "config.json" ]]; then
+        log_debug "✓ config.json存在"
+    else
+        log_error "✗ config.json缺失"
+        ((errors++))
+    fi
     
     # 检查Python环境
     if [[ -f "venv/bin/activate" ]]; then
@@ -370,14 +409,20 @@ verify_installation() {
             log_info "✓ Python依赖检查通过"
         else
             log_error "✗ Python依赖检查失败"
-            return 1
+            ((errors++))
         fi
     else
         log_error "✗ Python虚拟环境不存在"
-        return 1
+        ((errors++))
     fi
     
-    log_info "安装验证通过"
+    if [[ $errors -eq 0 ]]; then
+        log_info "安装验证通过"
+        return 0
+    else
+        log_error "安装验证失败，发现 $errors 个错误"
+        return 1
+    fi
 }
 
 # 显示安装后说明
@@ -396,13 +441,14 @@ show_post_install_info() {
     case $mode in
         local)
             echo "🚀 启动方法:"
-            echo "   cd $work_dir"
-            echo "   ./scripts/menu.sh"
-            echo ""
-            echo "🔧 手动启动:"
-            echo "   cd $work_dir"
-            echo "   source venv/bin/activate"
-            echo "   python3 src/monitor.py"
+            if [[ -f "$work_dir/menu.sh" ]]; then
+                echo "   cd $work_dir"
+                echo "   ./menu.sh"
+            else
+                echo "   cd $work_dir"
+                echo "   source venv/bin/activate"
+                echo "   python3 src/monitor.py"
+            fi
             ;;
         systemd)
             echo "🚀 服务管理:"
@@ -537,6 +583,10 @@ main_install() {
         systemd)
             echo ""
             echo "=== 配置系统服务 ==="
+            if [[ $EUID -ne 0 ]]; then
+                log_error "系统服务模式需要root权限"
+                exit 1
+            fi
             setup_systemd_service "$target_dir"
             ;;
         docker)
@@ -576,7 +626,7 @@ trap 'error_handler $LINENO' ERR
 # 主函数
 main() {
     # 检查运行权限
-    if [[ $EUID -ne 0 ]] && [[ "$1" == "--mode" && "$2" == "systemd" ]]; then
+    if [[ "$1" == "--mode" && "$2" == "systemd" ]] && [[ $EUID -ne 0 ]]; then
         log_error "系统服务模式需要root权限，请使用sudo运行"
         exit 1
     fi
