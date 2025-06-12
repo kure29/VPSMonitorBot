@@ -89,24 +89,30 @@ class MonitorItem:
     name: str
     url: str
     config: str = ""
+    price: str = ""  # 价格信息
+    network: str = ""  # 线路信息
     created_at: str = ""
     last_checked: str = ""
+    last_notified: str = ""  # 最后通知时间
     status: Optional[bool] = None
     notification_count: int = 0
+    stock_info: str = ""  # 库存信息
 
 @dataclass
 class Config:
     """配置数据类 - 支持所有可能的配置字段"""
     bot_token: str
     chat_id: str
-    check_interval: int = 300
-    max_notifications: int = 3
+    check_interval: int = 180  # 检查间隔3分钟
+    notification_aggregation_interval: int = 180  # 聚合间隔3分钟
+    notification_cooldown: int = 600  # 单个商品通知冷却时间10分钟
     request_timeout: int = 30
     retry_delay: int = 60
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     proxy: Optional[str] = None
     debug: bool = False
     log_level: str = "INFO"
+    admin_ids: List[str] = None  # 管理员ID列表
     
     def __post_init__(self):
         """初始化后处理"""
@@ -116,6 +122,10 @@ class Config:
         
         if not self.chat_id or self.chat_id == "YOUR_TELEGRAM_CHAT_ID":
             raise ValueError("请配置正确的Telegram Chat ID")
+        
+        # 如果没有配置管理员，则所有人都可以操作
+        if self.admin_ids is None:
+            self.admin_ids = []
 
 # ====== 配置管理器 ======
 class ConfigManager:
@@ -137,10 +147,10 @@ class ConfigManager:
                 print('''{
     "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
     "chat_id": "YOUR_TELEGRAM_CHAT_ID",
-    "check_interval": 300,
-    "max_notifications": 3,
-    "request_timeout": 30,
-    "retry_delay": 60
+    "admin_ids": ["123456789"],
+    "check_interval": 180,
+    "notification_aggregation_interval": 180,
+    "notification_cooldown": 600
 }''')
                 raise FileNotFoundError(f"配置文件 {self.config_file} 不存在")
             
@@ -226,10 +236,14 @@ class DataManager:
                         name=item_data.get('名称', ''),
                         url=item_data.get('URL', ''),
                         config=item_data.get('配置', ''),
+                        price=item_data.get('价格', ''),
+                        network=item_data.get('线路', ''),
                         created_at=item_data.get('created_at', ''),
                         last_checked=item_data.get('last_checked', ''),
+                        last_notified=item_data.get('last_notified', ''),
                         status=item_data.get('status'),
-                        notification_count=item_data.get('notification_count', 0)
+                        notification_count=item_data.get('notification_count', 0),
+                        stock_info=item_data.get('stock_info', '')
                     )
                 
                 self.logger.info(f"成功加载 {len(self._monitor_items)} 个监控项")
@@ -247,10 +261,14 @@ class DataManager:
                     '名称': item.name,
                     'URL': item.url,
                     '配置': item.config,
+                    '价格': item.price,
+                    '线路': item.network,
                     'created_at': item.created_at,
                     'last_checked': item.last_checked,
+                    'last_notified': item.last_notified,
                     'status': item.status,
-                    'notification_count': item.notification_count
+                    'notification_count': item.notification_count,
+                    'stock_info': item.stock_info
                 }
             
             async with aiofiles.open(self.data_file, 'w', encoding='utf-8') as f:
@@ -259,7 +277,7 @@ class DataManager:
             self.logger.error(f"保存数据文件失败: {e}")
             raise
     
-    def add_monitor_item(self, name: str, url: str, config: str = "") -> str:
+    def add_monitor_item(self, name: str, url: str, config: str = "", price: str = "", network: str = "") -> str:
         """添加监控项"""
         item_id = str(int(time.time()))
         item = MonitorItem(
@@ -267,6 +285,8 @@ class DataManager:
             name=name,
             url=url,
             config=config,
+            price=price,
+            network=network,
             created_at=datetime.now().isoformat()
         )
         self._monitor_items[item_id] = item
@@ -528,11 +548,14 @@ class TelegramBot:
             "/help - 显示帮助信息\n\n"
             "➕ 添加流程：\n"
             "1. 输入商品名称\n"
-            "2. 输入配置信息（可选）\n"
-            "3. 输入监控URL\n\n"
+            "2. 输入配置信息\n"
+            "3. 输入价格信息\n"
+            "4. 输入线路信息\n"
+            "5. 输入监控URL\n\n"
             "🔄 监控逻辑：\n"
             "• 智能检测库存状态变化\n"
-            "• 有货时最多通知3次\n"
+            "• 每3分钟聚合补货通知\n"
+            "• 单个商品10分钟内最多通知一次\n"
             "• 支持多种电商平台\n\n"
             "💡 提示：确保URL格式正确（包含http://或https://）"
         )
@@ -544,6 +567,12 @@ class TelegramBot:
     
     async def _add_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """处理 /add 命令"""
+        # 检查权限
+        user_id = str(update.effective_user.id)
+        if self.config.admin_ids and user_id not in self.config.admin_ids:
+            await update.message.reply_text("❌ 抱歉，只有管理员才能添加监控项目")
+            return
+        
         context.user_data.clear()
         context.user_data['adding_item'] = True
         context.user_data['step'] = 'name'
@@ -567,19 +596,33 @@ class TelegramBot:
             context.user_data['step'] = 'config'
             await update.message.reply_text(
                 f"✅ 商品名称：{text}\n\n"
-                "请输入配置信息（可选）：\n"
-                "（例如：2GB RAM, 20GB SSD）\n"
-                "或直接发送 /skip 跳过"
+                "请输入配置信息：\n"
+                "（例如：2GB RAM, 20GB SSD, 1TB/月）"
             )
         
         elif step == 'config':
-            if text != '/skip':
-                context.user_data['config'] = text
-            else:
-                context.user_data['config'] = ""
-            
+            context.user_data['config'] = text
+            context.user_data['step'] = 'price'
+            await update.message.reply_text(
+                f"✅ 配置信息：{text}\n\n"
+                "请输入价格信息：\n"
+                "（例如：$36.00 / 年付）"
+            )
+        
+        elif step == 'price':
+            context.user_data['price'] = text
+            context.user_data['step'] = 'network'
+            await update.message.reply_text(
+                f"✅ 价格信息：{text}\n\n"
+                "请输入线路信息：\n"
+                "（例如：优化线路 #9929 & #CMIN2）"
+            )
+        
+        elif step == 'network':
+            context.user_data['network'] = text
             context.user_data['step'] = 'url'
             await update.message.reply_text(
+                f"✅ 线路信息：{text}\n\n"
                 "请输入监控URL：\n"
                 "（必须以 http:// 或 https:// 开头）"
             )
@@ -598,6 +641,8 @@ class TelegramBot:
         
         name = context.user_data['name']
         config = context.user_data.get('config', '')
+        price = context.user_data.get('price', '')
+        network = context.user_data.get('network', '')
         
         # 检查是否已存在
         if self.data_manager.get_monitor_item_by_url(url):
@@ -609,7 +654,7 @@ class TelegramBot:
         
         try:
             # 添加到数据库
-            item_id = self.data_manager.add_monitor_item(name, url, config)
+            item_id = self.data_manager.add_monitor_item(name, url, config, price, network)
             await self.data_manager.save_monitor_items()
             
             # 立即检查状态
@@ -627,11 +672,12 @@ class TelegramBot:
             success_text = (
                 f"✅ 已添加监控商品\n\n"
                 f"📦 名称：{name}\n"
+                f"💰 价格：{price}\n"
+                f"🖥️ 配置：{config}\n"
+                f"📡 线路：{network}\n"
                 f"🔗 URL：{url}\n"
+                f"\n{status_text}"
             )
-            if config:
-                success_text += f"⚙️ 配置：{config}\n"
-            success_text += f"\n{status_text}"
             
             await processing_msg.edit_text(success_text)
             
@@ -711,11 +757,16 @@ class TelegramBot:
             self.logger.error(f"删除监控项失败: {e}")
             await message.reply_text("❌ 删除失败")
     
-    async def send_notification(self, message: str) -> None:
+    async def send_notification(self, message: str, parse_mode: str = None) -> None:
         """发送通知"""
         try:
             if self.app and self.app.bot:
-                await self.app.bot.send_message(chat_id=self.config.chat_id, text=message)
+                await self.app.bot.send_message(
+                    chat_id=self.config.chat_id, 
+                    text=message,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=False  # 允许链接预览
+                )
                 self.logger.info("Telegram通知发送成功")
         except Exception as e:
             self.logger.error(f"发送通知失败: {e}")
@@ -742,6 +793,8 @@ class VPSMonitor:
         self.telegram_bot = None
         self.logger = logging.getLogger(__name__)
         self._running = False
+        self._pending_notifications = []  # 待发送的通知
+        self._last_aggregation_time = datetime.now()
     
     async def initialize(self) -> None:
         """初始化监控器"""
@@ -843,23 +896,22 @@ class VPSMonitor:
                             self.data_manager.update_monitor_item_status(item.url, stock_available, 0)
                             continue
                         
-                        if stock_available != previous_status:
-                            # 状态发生变化
+                        if stock_available and not previous_status:
+                            # 从无货变为有货
+                            self._pending_notifications.append(item)
+                            self.data_manager.update_monitor_item_status(item.url, stock_available, 
+                                                                      item.notification_count + 1)
+                        elif not stock_available and previous_status:
+                            # 从有货变为无货
                             await self._send_status_change_notification(item, stock_available)
-                            
-                            notification_count = 1 if stock_available else 0
-                            self.data_manager.update_monitor_item_status(item.url, stock_available, notification_count)
-                            
-                        elif stock_available and item.notification_count < config.max_notifications:
-                            # 持续有货，继续通知
-                            await self._send_continued_stock_notification(item)
-                            self.data_manager.update_monitor_item_status(
-                                item.url, stock_available, item.notification_count + 1
-                            )
+                            self.data_manager.update_monitor_item_status(item.url, stock_available, 0)
                         
                     except Exception as e:
                         self.logger.error(f"监控循环出错 {item.url}: {e}")
                         continue
+                
+                # 处理聚合通知
+                await self._process_aggregated_notifications()
                 
                 # 保存状态
                 await self.data_manager.save_monitor_items()
@@ -870,31 +922,89 @@ class VPSMonitor:
                 await asyncio.sleep(config.retry_delay)
     
     async def _send_status_change_notification(self, item: MonitorItem, stock_available: bool) -> None:
-        """发送状态变化通知"""
-        message = f"📦 {item.name}\n🔗 {item.url}\n"
-        if item.config:
-            message += f"⚙️ 配置：{item.config}\n"
-        
+        """发送状态变化通知（Markdown格式）"""
         if stock_available:
-            message += "📊 状态：🟢 补货啦！商品现在有货"
+            # 检查是否在冷却时间内
+            if item.last_notified:
+                try:
+                    last_notified = datetime.fromisoformat(item.last_notified)
+                    cooldown_end = last_notified + timedelta(seconds=self.config.notification_cooldown)
+                    if datetime.now() < cooldown_end:
+                        self.logger.info(f"商品 {item.name} 在冷却时间内，跳过通知")
+                        return
+                except:
+                    pass
+            
+            # 尝试获取库存信息
+            stock_info = "∞ #Available" if item.stock_info else "有货"
+            
+            message = (
+                f"📦 **{item.name}**\n\n"
+                f"💰 **{item.price}**\n\n"
+                f"🖥️ **配置**\n"
+                f"{item.config}\n\n"
+                f"📡 **线路**：{item.network}\n"
+                f"🔗 [立即抢购]({item.url})\n\n"
+                f"🛒 **库存**：{stock_info}"
+            )
+            
+            await self.telegram_bot.send_notification(message, parse_mode='Markdown')
+            
+            # 更新最后通知时间
+            item.last_notified = datetime.now().isoformat()
+            
             print(f"🎉 {item.name} 现在有货！")
         else:
-            message += "📊 状态：🔴 已经无货"
+            # 缺货通知（简单格式）
+            message = f"📦 {item.name}\n📊 状态：🔴 已经无货"
+            await self.telegram_bot.send_notification(message)
             print(f"📉 {item.name} 已无货")
-        
-        await self.telegram_bot.send_notification(message)
     
-    async def _send_continued_stock_notification(self, item: MonitorItem) -> None:
-        """发送持续有货通知"""
-        message = f"📦 {item.name}\n🔗 {item.url}\n"
-        if item.config:
-            message += f"⚙️ 配置：{item.config}\n"
+    async def _process_aggregated_notifications(self) -> None:
+        """处理聚合通知"""
+        if not self._pending_notifications:
+            return
         
-        count = item.notification_count + 1
-        max_count = self.config_manager.config.max_notifications
-        message += f"📊 状态：🟢 仍然有货 (通知 {count}/{max_count})"
+        # 检查是否到达聚合时间间隔
+        time_since_last = (datetime.now() - self._last_aggregation_time).total_seconds()
+        if time_since_last < self.config_manager.config.notification_aggregation_interval:
+            return
         
-        await self.telegram_bot.send_notification(message)
+        # 过滤在冷却时间内的商品
+        notifications_to_send = []
+        for item in self._pending_notifications:
+            if item.last_notified:
+                try:
+                    last_notified = datetime.fromisoformat(item.last_notified)
+                    cooldown_end = last_notified + timedelta(seconds=self.config_manager.config.notification_cooldown)
+                    if datetime.now() < cooldown_end:
+                        continue
+                except:
+                    pass
+            notifications_to_send.append(item)
+        
+        if notifications_to_send:
+            # 发送聚合通知
+            message = "🎉 **补货通知** 🎉\n\n"
+            for item in notifications_to_send:
+                stock_info = "∞ #Available" if item.stock_info else "有货"
+                message += (
+                    f"📦 **{item.name}**\n"
+                    f"💰 {item.price}\n"
+                    f"🖥️ {item.config}\n"
+                    f"📡 {item.network}\n"
+                    f"🔗 [立即抢购]({item.url})\n"
+                    f"🛒 库存：{stock_info}\n\n"
+                )
+                # 更新最后通知时间
+                item.last_notified = datetime.now().isoformat()
+            
+            await self.telegram_bot.send_notification(message, parse_mode='Markdown')
+            print(f"📮 发送了 {len(notifications_to_send)} 个商品的聚合通知")
+        
+        # 清空待发送列表并更新时间
+        self._pending_notifications.clear()
+        self._last_aggregation_time = datetime.now()
     
     async def start(self) -> None:
         """启动监控"""
@@ -907,7 +1017,8 @@ class VPSMonitor:
             startup_message = (
                 "🚀 VPS监控程序 v1.0 已启动\n"
                 f"⏰ 检查间隔：{config.check_interval}秒\n"
-                f"📢 最大通知次数：{config.max_notifications}次\n\n"
+                f"📊 聚合间隔：{config.notification_aggregation_interval}秒\n"
+                f"🕐 通知冷却：{config.notification_cooldown}秒\n\n"
                 "💡 使用 /start 开始操作\n"
                 "👨‍💻 作者: kure29 | https://kure29.com"
             )
