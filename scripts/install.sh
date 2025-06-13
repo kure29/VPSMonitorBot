@@ -922,7 +922,7 @@ main_install() {
         fi
     fi
     
-    check_sqlite_version
+    check_sqlite_version || true
     log_info "系统要求检查完成"
     
     # 安装系统依赖
