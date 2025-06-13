@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-VPS监控系统 v3.0 - 智能组合监控版
+VPS监控系统 v3.0 - 多用户智能监控版
 作者: kure29
 网站: https://kure29.com
 
-新功能：
-- 智能组合监控（DOM + API + 指纹 + 视觉对比）
-- 针对不同商家的专用检测规则
-- 调试模式和详细日志
-- 更准确的库存状态判断
+功能特点：
+- 多用户支持，所有人可添加监控
+- 管理员权限控制
+- 智能组合监控算法
+- 用户行为统计和管理
 """
 
 import os
@@ -89,9 +89,11 @@ try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.common.exceptions import TimeoutException, WebDriverException
+    from webdriver_manager.chrome import ChromeDriverManager
     SELENIUM_AVAILABLE = True
     print("✅ Selenium可用，支持DOM监控")
 except ImportError:
@@ -99,7 +101,7 @@ except ImportError:
     print("⚠️ Selenium未安装，将使用基础监控模式")
 
 # 导入数据库管理器
-from database_manager import DatabaseManager, MonitorItem, CheckHistory
+from database_manager import DatabaseManager, MonitorItem, CheckHistory, User
 
 # ====== 数据类定义 ======
 @dataclass
@@ -122,9 +124,10 @@ class Config:
     # 新增配置项
     enable_selenium: bool = True
     enable_api_discovery: bool = True
-    enable_visual_comparison: bool = False  # 视觉对比默认关闭（资源消耗大）
-    confidence_threshold: float = 0.6  # 置信度阈值
-    chromium_path: Optional[str] = None  # 可选的Chromium路径
+    enable_visual_comparison: bool = False
+    confidence_threshold: float = 0.6
+    chromium_path: Optional[str] = None
+    daily_add_limit: int = 50  # 每日添加限制
     
     def __post_init__(self):
         """初始化后处理"""
@@ -290,7 +293,9 @@ class DOMElementMonitor:
             if self.config.chromium_path:
                 options.binary_location = self.config.chromium_path
             
-            self.driver = webdriver.Chrome(options=options)
+            # 使用webdriver-manager自动管理ChromeDriver
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             self.logger.info("Chrome浏览器初始化成功")
             
@@ -957,9 +962,9 @@ class SmartComboMonitor:
         if self.dom_monitor:
             self.dom_monitor.close()
 
-# ====== Telegram机器人（增强版） ======
+# ====== Telegram机器人（多用户版） ======
 class TelegramBot:
-    """Telegram机器人（增强版）"""
+    """Telegram机器人（多用户增强版）"""
     
     def __init__(self, config: Config, db_manager: DatabaseManager):
         self.config = config
@@ -993,7 +998,8 @@ class TelegramBot:
             CommandHandler("add", self._add_command),
             CommandHandler("status", self._status_command),
             CommandHandler("stats", self._stats_command),
-            CommandHandler("debug", self._debug_command),  # 新增调试命令
+            CommandHandler("debug", self._debug_command),
+            CommandHandler("admin", self._admin_command),
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message),
             CallbackQueryHandler(self._handle_callback)
         ]
@@ -1017,12 +1023,120 @@ class TelegramBot:
             return True
         return str(user_id) in self.config.admin_ids
     
-    async def _debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """调试命令 - 检查单个URL的详细信息"""
-        user_id = str(update.effective_user.id)
-        if not self._check_admin_permission(user_id):
-            await update.message.reply_text("❌ 只有管理员才能使用调试功能")
+    async def _get_user_info(self, update: Update) -> User:
+        """获取用户信息并更新数据库"""
+        user = update.effective_user
+        return await self.db_manager.add_or_update_user(
+            user_id=str(user.id),
+            username=user.username or "",
+            first_name=user.first_name or "",
+            last_name=user.last_name or ""
+        )
+    
+    # ===== 基础命令处理器 =====
+    
+    async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /start 命令"""
+        user_info = await self._get_user_info(update)
+        
+        if user_info.is_banned:
+            await update.message.reply_text("❌ 您已被管理员禁用，无法使用此服务")
             return
+        
+        await self._show_main_menu(update.message, user_info, edit_message=False)
+    
+    async def _help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /help 命令"""
+        help_text = (
+            "🤖 **VPS监控机器人 v3.0 帮助**\n\n"
+            
+            "📱 **基础功能:**\n"
+            "• `/start` - 显示主菜单\n"
+            "• `/list` - 查看您的监控列表\n"
+            "• `/add <URL>` - 添加监控项目\n"
+            "• `/status` - 查看系统状态\n"
+            "• `/stats` - 查看统计信息\n"
+            "• `/help` - 显示此帮助信息\n\n"
+            
+            "🔍 **调试功能:**\n"
+            "• `/debug <URL>` - 调试分析单个URL\n\n"
+            
+            "🚀 **v3.0 新特性:**\n"
+            "• 🧠 智能组合监控算法\n"
+            "• 🎯 多重检测方法验证\n"
+            "• 📊 置信度评分系统\n"
+            "• 👥 多用户支持\n"
+            "• 🛡️ 主流VPS商家适配\n\n"
+            
+            "💡 **使用提示:**\n"
+            "• 支持主流VPS商家（DMIT、RackNerd、BWH等）\n"
+            "• 智能检测算法自动选择最佳方法\n"
+            "• 所有用户都可以添加监控\n"
+            "• 库存变化会推送给管理员\n"
+            "• 每日添加限制：50个商品\n\n"
+            
+            "👨‍💻 **开发者信息:**\n"
+            "作者: kure29\n"
+            "网站: https://kure29.com"
+        )
+        
+        if self._check_admin_permission(str(update.effective_user.id)):
+            help_text += (
+                "\n\n🧩 **管理员专用:**\n"
+                "• `/admin` - 管理员控制面板\n"
+                "• 全局监控管理\n"
+                "• 用户行为统计\n"
+                "• 系统配置管理"
+            )
+        
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+    
+    async def _list_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /list 命令"""
+        user_info = await self._get_user_info(update)
+        if user_info.is_banned:
+            await update.message.reply_text("❌ 您已被禁用")
+            return
+        
+        await self._show_monitor_list(update.message, user_info.id, 0, edit_message=False)
+    
+    async def _add_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /add 命令"""
+        user_info = await self._get_user_info(update)
+        if user_info.is_banned:
+            await update.message.reply_text("❌ 您已被禁用")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "📝 **添加监控使用方法:**\n\n"
+                "`/add <URL> [名称]`\n\n"
+                "例如:\n"
+                "`/add https://example.com/vps 测试VPS`\n"
+                "`/add https://example.com/product`\n\n"
+                "💡 如果不指定名称，将自动提取页面标题",
+                parse_mode='Markdown'
+            )
+            return
+        
+        url = context.args[0]
+        name = " ".join(context.args[1:]) if len(context.args) > 1 else ""
+        
+        await self._add_monitor_item(update.message, user_info.id, url, name)
+    
+    async def _status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /status 命令"""
+        user_info = await self._get_user_info(update)
+        await self._show_system_status(update.message, user_info.id)
+    
+    async def _stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /stats 命令"""
+        user_info = await self._get_user_info(update)
+        await self._show_user_statistics(update.message, user_info.id)
+    
+    async def _debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /debug 命令"""
+        user_info = await self._get_user_info(update)
         
         if len(context.args) == 0:
             await update.message.reply_text(
@@ -1039,10 +1153,265 @@ class TelegramBot:
             await update.message.reply_text("❌ URL格式无效")
             return
         
-        checking_msg = await update.message.reply_text("🔍 正在进行详细分析...")
+        await self._debug_url(update.message, url)
+    
+    async def _admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理 /admin 命令"""
+        user_id = str(update.effective_user.id)
+        if not self._check_admin_permission(user_id):
+            await update.message.reply_text("❌ 只有管理员才能使用此功能")
+            return
+        
+        await self._show_admin_panel(update.message, user_id)
+    
+    # ===== 菜单和界面显示 =====
+    
+    async def _show_main_menu(self, message_or_query, user_info: User, edit_message: bool = False) -> None:
+        """显示主菜单"""
+        is_admin = self._check_admin_permission(user_info.id)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 我的监控", callback_data=f'list_items_{user_info.id}_0'),
+                InlineKeyboardButton("➕ 添加监控", callback_data='add_item')
+            ],
+            [
+                InlineKeyboardButton("📊 系统状态", callback_data='status'),
+                InlineKeyboardButton("📈 我的统计", callback_data='my_stats')
+            ]
+        ]
+        
+        if is_admin:
+            keyboard.append([
+                InlineKeyboardButton("🧩 管理员面板", callback_data='admin_panel'),
+                InlineKeyboardButton("🔍 调试工具", callback_data='debug_tools')
+            ])
+        
+        keyboard.append([InlineKeyboardButton("❓ 帮助", callback_data='help')])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        user_display = user_info.username or user_info.first_name or "未知用户"
+        
+        welcome_text = (
+            f"👋 欢迎，{user_display}！\n\n"
+            "🤖 **VPS 监控机器人 v3.0**\n"
+            "🧠 智能多重检测算法\n\n"
+            
+            f"📊 **您的统计:**\n"
+            f"• 监控项目: {user_info.total_monitors} 个\n"
+            f"• 通知次数: {user_info.total_notifications} 次\n"
+            f"• 今日添加: {user_info.daily_add_count} 个\n\n"
+            
+            "🆕 **v3.0 特色:**\n"
+            "• 🎯 高精度库存检测\n"
+            "• 🧠 智能算法组合\n"
+            "• 📊 置信度评分\n"
+            "• 👥 多用户共享\n"
+            "• 🛡️ 主流商家优化"
+        )
+        
+        if is_admin:
+            welcome_text += "\n\n🧩 您是管理员，可使用管理功能"
+        
+        if edit_message:
+            await message_or_query.edit_message_text(welcome_text, reply_markup=reply_markup)
+        else:
+            await message_or_query.reply_text(welcome_text, reply_markup=reply_markup)
+    
+    async def _show_monitor_list(self, message_or_query, user_id: str, page: int = 0, edit_message: bool = True) -> None:
+        """显示监控列表"""
+        items = await self.db_manager.get_monitor_items(user_id=user_id, include_global=True)
+        
+        if not items:
+            text = "📝 **您的监控列表**\n\n❌ 还没有监控项目\n\n💡 点击下方按钮添加您的第一个监控项目"
+            keyboard = [[InlineKeyboardButton("➕ 添加监控", callback_data='add_item')]]
+        else:
+            items_list = list(items.values())
+            total_pages = (len(items_list) + self.config.items_per_page - 1) // self.config.items_per_page
+            start_idx = page * self.config.items_per_page
+            end_idx = start_idx + self.config.items_per_page
+            page_items = items_list[start_idx:end_idx]
+            
+            text = f"📝 **您的监控列表** (第 {page + 1}/{total_pages} 页)\n\n"
+            
+            keyboard = []
+            for i, item in enumerate(page_items, start=start_idx + 1):
+                status_emoji = "🟢" if item.status else "🔴" if item.status is False else "⚪"
+                global_mark = "🌐" if item.is_global else ""
+                name = item.name[:25] + "..." if len(item.name) > 25 else item.name
+                
+                text += f"{i}. {status_emoji} {global_mark}{name}\n"
+                text += f"   📊 成功率: {self._calculate_success_rate(item)}\n"
+                
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"{i}. {name[:15]}...", 
+                        callback_data=f'item_detail_{item.id}'
+                    )
+                ])
+            
+            # 分页按钮
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ 上页", callback_data=f'list_items_{user_id}_{page-1}'))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("➡️ 下页", callback_data=f'list_items_{user_id}_{page+1}'))
+            
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+            
+            keyboard.append([
+                InlineKeyboardButton("➕ 添加监控", callback_data='add_item'),
+                InlineKeyboardButton("🔄 刷新", callback_data=f'list_items_{user_id}_{page}')
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if edit_message:
+            await message_or_query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await message_or_query.reply_text(text, reply_markup=reply_markup)
+    
+    async def _show_admin_panel(self, message_or_query, admin_id: str, edit_message: bool = False) -> None:
+        """显示管理员面板"""
+        # 获取全局统计
+        stats = await self.db_manager.get_global_statistics()
+        
+        text = (
+            "🧩 **管理员控制面板**\n\n"
+            
+            f"👥 **用户统计:**\n"
+            f"• 总用户数: {stats.get('users', {}).get('total', 0)}\n"
+            f"• 活跃用户: {stats.get('users', {}).get('active', 0)}\n"
+            f"• 被封用户: {stats.get('users', {}).get('banned', 0)}\n\n"
+            
+            f"📊 **监控统计:**\n"
+            f"• 总监控项: {stats.get('monitor_items', {}).get('total', 0)}\n"
+            f"• 启用项目: {stats.get('monitor_items', {}).get('enabled', 0)}\n"
+            f"• 全局项目: {stats.get('monitor_items', {}).get('global', 0)}\n"
+            f"• 有货项目: {stats.get('monitor_items', {}).get('in_stock', 0)}\n\n"
+            
+            f"🔍 **检查统计:**\n"
+            f"• 总检查次数: {stats.get('checks', {}).get('total', 0)}\n"
+            f"• 成功检查: {stats.get('checks', {}).get('successful', 0)}\n"
+            f"• 平均响应: {stats.get('checks', {}).get('avg_response_time', 0)}s\n"
+            f"• 平均置信度: {stats.get('checks', {}).get('avg_confidence', 0)}\n"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("👥 用户管理", callback_data='admin_users'),
+                InlineKeyboardButton("📊 全局监控", callback_data='admin_monitors')
+            ],
+            [
+                InlineKeyboardButton("📈 详细统计", callback_data='admin_stats'),
+                InlineKeyboardButton("⚙️ 系统配置", callback_data='admin_config')
+            ],
+            [
+                InlineKeyboardButton("🔧 维护工具", callback_data='admin_maintenance'),
+                InlineKeyboardButton("📋 操作日志", callback_data='admin_logs')
+            ],
+            [InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if edit_message:
+            await message_or_query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await message_or_query.reply_text(text, reply_markup=reply_markup)
+    
+    # ===== 核心功能实现 =====
+    
+    async def _add_monitor_item(self, message, user_id: str, url: str, name: str = "") -> None:
+        """添加监控项目"""
+        # 验证URL
+        is_valid, error_msg = self._is_valid_url(url)
+        if not is_valid:
+            await message.reply_text(f"❌ {error_msg}")
+            return
+        
+        # 检查用户状态
+        user = await self.db_manager.get_user(user_id)
+        if user and user.is_banned:
+            await message.reply_text("❌ 您已被禁用，无法添加监控")
+            return
+        
+        # 检查每日限制
+        if user and user.daily_add_count >= self.config.daily_add_limit:
+            today = datetime.now().date().isoformat()
+            if user.last_add_date == today:
+                await message.reply_text(f"❌ 今日添加数量已达上限 ({self.config.daily_add_limit})")
+                return
+        
+        adding_msg = await message.reply_text("⏳ 正在添加监控项...")
         
         try:
-            # 创建智能监控器进行调试
+            # 如果没有提供名称，尝试获取页面标题
+            if not name:
+                try:
+                    smart_monitor = SmartComboMonitor(self.config)
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: smart_monitor.scraper.get(url, timeout=10)
+                    )
+                    
+                    if response and response.status_code == 200:
+                        title_match = re.search(r'<title[^>]*>(.*?)</title>', response.text, re.IGNORECASE | re.DOTALL)
+                        if title_match:
+                            name = title_match.group(1).strip()[:50]
+                    
+                    smart_monitor.close()
+                except:
+                    pass
+                
+                if not name:
+                    name = f"监控项目 {datetime.now().strftime('%m-%d %H:%M')}"
+            
+            # 添加到数据库
+            item_id, success = await self.db_manager.add_monitor_item(
+                user_id=user_id,
+                name=name,
+                url=url,
+                config="",
+                tags=[],
+                is_global=False
+            )
+            
+            if success:
+                await adding_msg.edit_text(
+                    f"✅ **监控添加成功**\n\n"
+                    f"📝 名称: {name}\n"
+                    f"🔗 URL: {url}\n"
+                    f"🆔 ID: {item_id}\n\n"
+                    f"🔍 系统将在下次检查周期中开始监控此项目\n"
+                    f"📱 库存变化时会推送通知给管理员"
+                )
+                
+                # 通知管理员
+                for admin_id in self.config.admin_ids:
+                    await self.send_notification(
+                        message=f"📝 新增监控项\n\n"
+                                f"👤 用户: {user.username or user.first_name or user_id}\n"
+                                f"📝 名称: {name}\n"
+                                f"🔗 URL: {url}",
+                        chat_id=admin_id
+                    )
+            else:
+                await adding_msg.edit_text("❌ 添加失败，可能URL已存在或达到限制")
+                
+        except Exception as e:
+            await adding_msg.edit_text(f"❌ 添加失败: {str(e)}")
+            self.logger.error(f"添加监控项失败: {e}")
+    
+    async def _debug_url(self, message, url: str) -> None:
+        """调试URL分析"""
+        checking_msg = await message.reply_text("🔍 正在进行详细分析...")
+        
+        try:
             smart_monitor = SmartComboMonitor(self.config)
             result = await smart_monitor.comprehensive_check(url)
             
@@ -1091,67 +1460,184 @@ class TelegramBot:
         except Exception as e:
             await checking_msg.edit_text(f"❌ 调试分析失败: {str(e)}")
     
-    # ... [其他方法保持不变，这里省略重复代码]
+    # ===== 统计和状态显示 =====
     
-    async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """处理 /start 命令"""
-        user_id = str(update.effective_user.id)
-        await self._show_main_menu(update.message, user_id, edit_message=False)
+    async def _show_system_status(self, message, user_id: str) -> None:
+        """显示系统状态"""
+        try:
+            stats = await self.db_manager.get_global_statistics()
+            
+            status_text = (
+                "📊 **系统运行状态**\n\n"
+                
+                f"🤖 **Bot状态:** ✅ 运行中\n"
+                f"🧠 **监控算法:** v3.0 智能组合\n"
+                f"⏱️ **检查间隔:** {self.config.check_interval}秒\n"
+                f"🎯 **置信度阈值:** {self.config.confidence_threshold}\n\n"
+                
+                f"👥 **用户统计:**\n"
+                f"• 总用户: {stats.get('users', {}).get('total', 0)}\n"
+                f"• 活跃用户: {stats.get('users', {}).get('active', 0)}\n\n"
+                
+                f"📋 **监控统计:**\n"
+                f"• 总监控项: {stats.get('monitor_items', {}).get('total', 0)}\n"
+                f"• 启用项目: {stats.get('monitor_items', {}).get('enabled', 0)}\n"
+                f"• 有货项目: {stats.get('monitor_items', {}).get('in_stock', 0)}\n\n"
+                
+                f"🔍 **检查统计:**\n"
+                f"• 总检查: {stats.get('checks', {}).get('total', 0)}\n"
+                f"• 成功率: {self._calculate_global_success_rate(stats)}\n"
+                f"• 平均响应: {stats.get('checks', {}).get('avg_response_time', 0)}s\n"
+                f"• 平均置信度: {stats.get('checks', {}).get('avg_confidence', 0):.2f}\n\n"
+                
+                f"🚀 **功能状态:**\n"
+                f"• Selenium: {'✅' if SELENIUM_AVAILABLE and self.config.enable_selenium else '❌'}\n"
+                f"• API发现: {'✅' if self.config.enable_api_discovery else '❌'}\n"
+                f"• 视觉对比: {'✅' if self.config.enable_visual_comparison else '❌'}\n\n"
+                
+                f"⏰ 最后更新: {datetime.now().strftime('%H:%M:%S')}"
+            )
+            
+            keyboard = [[InlineKeyboardButton("🔄 刷新", callback_data='status')]]
+            if self._check_admin_permission(user_id):
+                keyboard[0].append(InlineKeyboardButton("🧩 管理面板", callback_data='admin_panel'))
+            keyboard.append([InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')])
+            
+            await message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            await message.reply_text(f"❌ 获取系统状态失败: {str(e)}")
     
-    async def _show_main_menu(self, message_or_query, user_id: str, edit_message: bool = False) -> None:
-        """显示主菜单"""
-        is_admin = self._check_admin_permission(user_id)
-        
-        if is_admin:
+    async def _show_user_statistics(self, message, user_id: str) -> None:
+        """显示用户统计"""
+        try:
+            stats = await self.db_manager.get_user_statistics(user_id)
+            
+            user_info = stats.get('user_info', {})
+            monitor_info = stats.get('monitor_items', {})
+            activities = stats.get('recent_activities', {})
+            
+            stats_text = (
+                f"📈 **个人统计信息**\n\n"
+                
+                f"👤 **基本信息:**\n"
+                f"• 用户名: {user_info.get('username', '未设置')}\n"
+                f"• 注册时间: {user_info.get('created_at', '').split('T')[0] if user_info.get('created_at') else '未知'}\n"
+                f"• 总监控数: {user_info.get('total_monitors', 0)}\n"
+                f"• 总通知数: {user_info.get('total_notifications', 0)}\n\n"
+                
+                f"📊 **监控项目:**\n"
+                f"• 总数: {monitor_info.get('total', 0)}\n"
+                f"• 启用: {monitor_info.get('enabled', 0)}\n"
+                f"• 有货: {monitor_info.get('in_stock', 0)}\n"
+                f"• 全局项目: {monitor_info.get('global_items', 0)}\n\n"
+                
+                "🎯 **近期活动:**\n"
+            )
+            
+            if activities:
+                for action, count in list(activities.items())[:5]:
+                    action_name = {
+                        'add_monitor': '添加监控',
+                        'remove_monitor': '删除监控',
+                        'user_login': '登录使用'
+                    }.get(action, action)
+                    stats_text += f"• {action_name}: {count} 次\n"
+            else:
+                stats_text += "• 暂无活动记录\n"
+            
             keyboard = [
-                [
-                    InlineKeyboardButton("📝 查看监控列表", callback_data='list_items_page_0'),
-                    InlineKeyboardButton("➕ 添加监控", callback_data='add_item')
-                ],
-                [
-                    InlineKeyboardButton("📊 系统状态", callback_data='status'),
-                    InlineKeyboardButton("📈 统计信息", callback_data='stats')
-                ],
-                [
-                    InlineKeyboardButton("🔍 调试工具", callback_data='debug_tools'),
-                    InlineKeyboardButton("❓ 帮助", callback_data='help')
-                ]
+                [InlineKeyboardButton("🔄 刷新", callback_data='my_stats')],
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]
             ]
-        else:
-            keyboard = [
-                [
-                    InlineKeyboardButton("📝 查看监控列表", callback_data='list_items_page_0'),
-                    InlineKeyboardButton("📊 系统状态", callback_data='status')
-                ],
-                [InlineKeyboardButton("❓ 帮助", callback_data='help')]
-            ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        welcome_text = (
-            "👋 欢迎使用 VPS 监控机器人 v3.0！\n\n"
-            "🚀 **新功能亮点:**\n"
-            "• 🧠 智能组合监控算法\n"
-            "• 🎯 多重检测方法（DOM+API+指纹）\n"
-            "• 📊 置信度评分系统\n"
-            "• 🔍 专业调试工具\n"
-            "• 🛡️ 针对主流VPS商家优化\n\n"
-            "📱 **快速操作:**\n"
-            "• 查看监控列表\n"
-            "• 添加新监控项目\n"
-            "• 实时系统状态\n"
-            "• 详细统计分析"
-        )
-        
-        if not is_admin and self.config.admin_ids:
-            welcome_text += "\n\n⚠️ 注意：您没有管理员权限，只能查看监控列表和系统状态"
-        
-        if edit_message:
-            await message_or_query.edit_message_text(welcome_text, reply_markup=reply_markup)
-        else:
-            await message_or_query.reply_text(welcome_text, reply_markup=reply_markup)
+            
+            await message.reply_text(stats_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            await message.reply_text(f"❌ 获取统计信息失败: {str(e)}")
     
-    # ... [继续其他方法的实现，保持原有功能]
+    # ===== 消息处理器 =====
+    
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理文本消息"""
+        user_info = await self._get_user_info(update)
+        if user_info.is_banned:
+            return
+        
+        text = update.message.text.strip()
+        
+        # 检查是否是URL
+        if text.startswith(('http://', 'https://')):
+            await self._add_monitor_item(update.message, user_info.id, text)
+        else:
+            # 提供帮助信息
+            await update.message.reply_text(
+                "💡 **快速添加监控:**\n"
+                "直接发送URL即可添加监控\n\n"
+                "📋 **其他操作:**\n"
+                "• 使用 /start 查看菜单\n"
+                "• 使用 /help 查看帮助\n"
+                "• 使用 /list 查看监控列表"
+            )
+    
+    async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理回调查询"""
+        query = update.callback_query
+        user_info = await self._get_user_info(update)
+        
+        if user_info.is_banned:
+            await query.answer("您已被禁用")
+            return
+        
+        data = query.data
+        
+        try:
+            if data == 'main_menu':
+                await self._show_main_menu(query, user_info, edit_message=True)
+            
+            elif data == 'add_item':
+                await query.edit_message_text(
+                    "📝 **添加监控项目**\n\n"
+                    "请发送以下格式的消息:\n"
+                    "`/add <URL> [名称]`\n\n"
+                    "或者直接发送URL，系统会自动提取页面标题作为名称\n\n"
+                    "例如:\n"
+                    "`/add https://example.com/vps 测试VPS`\n"
+                    "`https://example.com/product`",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')
+                    ]])
+                )
+            
+            elif data.startswith('list_items_'):
+                parts = data.split('_')
+                target_user_id = parts[2]
+                page = int(parts[3])
+                await self._show_monitor_list(query, target_user_id, page, edit_message=True)
+            
+            elif data == 'status':
+                await self._show_system_status(query.message, user_info.id)
+            
+            elif data == 'my_stats':
+                await self._show_user_statistics(query.message, user_info.id)
+            
+            elif data == 'help':
+                await self._help_command(update, context)
+            
+            elif data == 'admin_panel':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_admin_panel(query, user_info.id, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            await query.answer()
+            
+        except Exception as e:
+            self.logger.error(f"处理回调查询失败: {e}")
+            await query.answer("操作失败，请重试")
+    
+    # ===== 工具方法 =====
     
     def _is_valid_url(self, url: str) -> Tuple[bool, str]:
         """验证URL格式"""
@@ -1174,8 +1660,29 @@ class TelegramBot:
         except Exception:
             return False, "URL格式无效"
     
+    def _calculate_success_rate(self, item: MonitorItem) -> str:
+        """计算成功率"""
+        total = item.success_count + item.failure_count
+        if total == 0:
+            return "暂无数据"
+        
+        rate = (item.success_count / total) * 100
+        return f"{rate:.1f}%"
+    
+    def _calculate_global_success_rate(self, stats: Dict) -> str:
+        """计算全局成功率"""
+        checks = stats.get('checks', {})
+        total = checks.get('total', 0)
+        successful = checks.get('successful', 0)
+        
+        if total == 0:
+            return "暂无数据"
+        
+        rate = (successful / total) * 100
+        return f"{rate:.1f}%"
+    
     async def send_notification(self, message: str, parse_mode: str = None, chat_id: str = None) -> None:
-        """发送通知（支持发送到不同聊天）"""
+        """发送通知"""
         try:
             if self.app and self.app.bot:
                 target_chat_id = chat_id or self.config.channel_id or self.config.chat_id
@@ -1201,9 +1708,9 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"关闭机器人失败: {e}")
 
-# ====== 主监控类（升级版） ======
+# ====== 主监控类（多用户版） ======
 class VPSMonitor:
-    """主监控类（v3.0升级版）"""
+    """主监控类（v3.0多用户版）"""
     
     def __init__(self):
         self.config_manager = ConfigManager()
@@ -1219,7 +1726,7 @@ class VPSMonitor:
     async def initialize(self) -> None:
         """初始化监控器"""
         try:
-            print("🔧 初始化监控器 v3.0...")
+            print("🔧 初始化监控器 v3.0 (多用户版)...")
             
             # 加载配置
             config = self.config_manager.load_config()
@@ -1227,7 +1734,7 @@ class VPSMonitor:
             
             # 初始化数据库
             await self.db_manager.initialize()
-            print("✅ 数据库初始化成功")
+            print("✅ 多用户数据库初始化成功")
             
             # 初始化智能监控器
             self.stock_checker = SmartComboMonitor(config)
@@ -1240,9 +1747,11 @@ class VPSMonitor:
             print(f"🤖 Selenium支持: {'✅' if SELENIUM_AVAILABLE and config.enable_selenium else '❌'}")
             print(f"🔍 API发现: {'✅' if config.enable_api_discovery else '❌'}")
             print(f"👁️ 视觉对比: {'✅' if config.enable_visual_comparison else '❌'}")
+            print(f"👥 多用户支持: ✅")
+            print(f"📊 每日添加限制: {config.daily_add_limit}")
             
-            self.logger.info("监控器v3.0初始化完成")
-            print("✅ 监控器v3.0初始化完成")
+            self.logger.info("多用户监控器v3.0初始化完成")
+            print("✅ 多用户监控器v3.0初始化完成")
             
         except Exception as e:
             self.logger.error(f"监控器初始化失败: {e}")
@@ -1251,9 +1760,10 @@ class VPSMonitor:
     
     async def _perform_startup_check(self) -> None:
         """执行启动检查"""
-        items = await self.db_manager.get_monitor_items()
+        # 获取所有启用的监控项（包括全局项目）
+        items = await self.db_manager.get_monitor_items(enabled_only=True)
         if not items:
-            await self.telegram_bot.send_notification("⚠️ 当前没有监控商品，请使用 /add 添加")
+            await self.telegram_bot.send_notification("⚠️ 当前没有监控商品")
             print("⚠️ 当前没有监控商品")
             return
         
@@ -1266,7 +1776,7 @@ class VPSMonitor:
         
         for item in items.values():
             try:
-                print(f"智能检查: {item.name}")
+                print(f"智能检查: {item.name} (用户: {item.user_id})")
                 stock_available, error, check_info = await self.stock_checker.check_stock(item.url)
                 
                 # 记录检查历史
@@ -1276,7 +1786,9 @@ class VPSMonitor:
                     response_time=check_info['response_time'],
                     error_message=error or '',
                     http_status=check_info['http_status'],
-                    content_length=check_info['content_length']
+                    content_length=check_info['content_length'],
+                    confidence=check_info.get('confidence', 0),
+                    method_used=check_info.get('method', 'SMART_COMBO')
                 )
                 
                 if error:
@@ -1303,35 +1815,186 @@ class VPSMonitor:
             f"🧠 智能启动检查完成\n\n"
             f"✅ 成功: {success_count} 个\n"
             f"❌ 失败: {fail_count} 个\n"
-            f"⚠️ 低置信度: {low_confidence_count} 个"
+            f"⚠️ 低置信度: {low_confidence_count} 个\n\n"
+            f"🎯 多用户监控系统已就绪"
         )
         await self.telegram_bot.send_notification(summary)
         print(f"\n{summary}")
     
-    # ... [其他方法与原版本类似，但使用SmartComboMonitor替代StockChecker]
+    async def _monitor_loop(self) -> None:
+        """监控循环"""
+        while self._running:
+            try:
+                await self._check_all_items()
+                await self._process_notifications()
+                
+                # 等待下次检查
+                await asyncio.sleep(self.config_manager.config.check_interval)
+                
+            except Exception as e:
+                self.logger.error(f"监控循环错误: {e}")
+                await asyncio.sleep(60)  # 出错时等待1分钟
+    
+    async def _check_all_items(self) -> None:
+        """检查所有监控项"""
+        items = await self.db_manager.get_monitor_items(enabled_only=True)
+        
+        if not items:
+            return
+        
+        print(f"🔍 检查 {len(items)} 个监控项...")
+        
+        for item in items.values():
+            try:
+                stock_available, error, check_info = await self.stock_checker.check_stock(item.url)
+                
+                # 记录检查历史
+                await self.db_manager.add_check_history(
+                    monitor_id=item.id,
+                    status=stock_available,
+                    response_time=check_info['response_time'],
+                    error_message=error or '',
+                    http_status=check_info['http_status'],
+                    content_length=check_info['content_length'],
+                    confidence=check_info.get('confidence', 0),
+                    method_used=check_info.get('method', 'SMART_COMBO')
+                )
+                
+                # 检查是否需要通知
+                if not error and stock_available is not None:
+                    await self._check_for_notifications(item, stock_available, check_info)
+                    await self.db_manager.update_monitor_item_status(item.id, stock_available, 0)
+                
+            except Exception as e:
+                self.logger.error(f"检查项目失败 {item.url}: {e}")
+    
+    async def _check_for_notifications(self, item: MonitorItem, stock_available: bool, check_info: Dict) -> None:
+        """检查是否需要发送通知"""
+        # 只有状态变化或首次检查时才通知
+        if item.status != stock_available:
+            confidence = check_info.get('confidence', 0)
+            
+            if stock_available and confidence >= self.config_manager.config.confidence_threshold:
+                # 有货通知
+                notification = {
+                    'type': 'stock_available',
+                    'item': item,
+                    'confidence': confidence,
+                    'timestamp': datetime.now()
+                }
+                
+                # 检查通知冷却
+                cooldown_key = f"{item.id}_available"
+                last_notified = self._last_notified.get(cooldown_key)
+                
+                if not last_notified or (datetime.now() - last_notified).seconds > self.config_manager.config.notification_cooldown:
+                    self._pending_notifications.append(notification)
+                    self._last_notified[cooldown_key] = datetime.now()
+    
+    async def _process_notifications(self) -> None:
+        """处理待发送的通知"""
+        if not self._pending_notifications:
+            return
+        
+        # 检查是否到达聚合时间
+        time_since_last = (datetime.now() - self._last_aggregation_time).seconds
+        if time_since_last < self.config_manager.config.notification_aggregation_interval:
+            return
+        
+        # 按类型分组通知
+        available_notifications = [n for n in self._pending_notifications if n['type'] == 'stock_available']
+        
+        if available_notifications:
+            await self._send_aggregated_notifications(available_notifications)
+        
+        # 清空待发送列表
+        self._pending_notifications.clear()
+        self._last_aggregation_time = datetime.now()
+    
+    async def _send_aggregated_notifications(self, notifications: List[Dict]) -> None:
+        """发送聚合通知"""
+        if len(notifications) == 1:
+            # 单个通知
+            item = notifications[0]['item']
+            confidence = notifications[0]['confidence']
+            
+            user_info = await self.db_manager.get_user(item.user_id)
+            user_display = "未知用户"
+            if user_info:
+                user_display = user_info.username or user_info.first_name or f"用户{item.user_id}"
+            
+            message = (
+                f"🟢 **有货提醒**\n\n"
+                f"📝 **商品:** {item.name}\n"
+                f"👤 **添加者:** {user_display}\n"
+                f"🔗 **链接:** {item.url}\n"
+                f"🎯 **置信度:** {confidence:.2f}\n"
+                f"🕐 **检测时间:** {datetime.now().strftime('%H:%M:%S')}\n\n"
+                f"🧠 **检测方法:** 智能组合算法"
+            )
+        else:
+            # 批量通知
+            message = f"🟢 **批量有货提醒** ({len(notifications)}个商品)\n\n"
+            
+            for i, notification in enumerate(notifications[:5], 1):
+                item = notification['item']
+                confidence = notification['confidence']
+                user_info = await self.db_manager.get_user(item.user_id)
+                user_display = user_info.username if user_info and user_info.username else f"用户{item.user_id}"
+                
+                message += f"{i}. **{item.name}**\n"
+                message += f"   👤 {user_display} | 🎯 {confidence:.2f}\n"
+                message += f"   🔗 {item.url}\n\n"
+            
+            if len(notifications) > 5:
+                message += f"...还有 {len(notifications) - 5} 个商品有货\n\n"
+            
+            message += f"🕐 **检测时间:** {datetime.now().strftime('%H:%M:%S')}"
+        
+        # 发送给所有管理员
+        for admin_id in self.config_manager.config.admin_ids:
+            await self.telegram_bot.send_notification(message, parse_mode='Markdown', chat_id=admin_id)
+        
+        # 记录通知历史
+        for notification in notifications:
+            item = notification['item']
+            await self.db_manager.add_notification_history(
+                user_id=item.user_id,
+                monitor_id=item.id,
+                message=message,
+                notification_type='stock_alert'
+            )
     
     async def start(self) -> None:
         """启动监控"""
         try:
-            print("🚀 启动VPS监控系统 v3.0...")
+            print("🚀 启动VPS监控系统 v3.0 (多用户版)...")
             await self.initialize()
             
             # 发送启动通知
             config = self.config_manager.config
             startup_message = (
-                "🚀 **VPS监控程序 v3.0 已启动**\n\n"
+                "🚀 **VPS监控程序 v3.0 已启动** (多用户版)\n\n"
                 "🆕 **v3.0新特性:**\n"
                 "🧠 智能组合监控算法\n"
                 "🎯 多重检测方法验证\n"
                 "📊 置信度评分系统\n"
-                "🔍 专业调试工具\n"
+                "👥 多用户支持系统\n"
                 "🛡️ 主流VPS商家适配\n\n"
+                f"⚙️ **系统配置:**\n"
                 f"⏰ 检查间隔：{config.check_interval}秒\n"
                 f"📊 聚合间隔：{config.notification_aggregation_interval}秒\n"
                 f"🕐 通知冷却：{config.notification_cooldown}秒\n"
-                f"🎯 置信度阈值：{config.confidence_threshold}\n\n"
+                f"🎯 置信度阈值：{config.confidence_threshold}\n"
+                f"📈 每日添加限制：{config.daily_add_limit}\n\n"
+                f"👥 **多用户特性:**\n"
+                f"• 所有用户都可添加监控\n"
+                f"• 库存变化推送给管理员\n"
+                f"• 用户行为统计和管理\n"
+                f"• 智能防刷机制\n\n"
                 "💡 使用 /start 开始操作\n"
-                "🔍 使用 /debug <URL> 进行调试\n\n"
+                "🔍 使用 /debug <URL> 进行调试\n"
+                "🧩 管理员可使用 /admin 管理\n\n"
                 "👨‍💻 作者: kure29 | https://kure29.com"
             )
             await self.telegram_bot.send_notification(startup_message, parse_mode='Markdown')
@@ -1341,7 +2004,7 @@ class VPSMonitor:
             
             # 开始监控循环
             self._running = True
-            print("✅ 智能监控系统启动成功，按Ctrl+C停止")
+            print("✅ 多用户智能监控系统启动成功，按Ctrl+C停止")
             await self._monitor_loop()
             
         except KeyboardInterrupt:
@@ -1365,6 +2028,7 @@ class VPSMonitor:
         self.logger.info("监控程序已停止")
         print("✅ 监控程序已停止")
 
+
 # ====== 日志设置 ======
 def setup_logging() -> None:
     """设置日志"""
@@ -1377,17 +2041,18 @@ def setup_logging() -> None:
         ]
     )
 
+
 # ====== 主函数 ======
 async def main():
     """主函数"""
     setup_logging()
     logger = logging.getLogger(__name__)
     
-    print("🤖 VPS监控系统 v3.0 - 智能组合监控版")
+    print("🤖 VPS监控系统 v3.0 - 多用户智能监控版")
     print("👨‍💻 作者: kure29")
     print("🌐 网站: https://kure29.com")
-    print("🆕 新功能: 智能算法+多重验证+置信度评分")
-    print("=" * 50)
+    print("🆕 新功能: 多用户+智能算法+多重验证+置信度评分")
+    print("=" * 60)
     
     try:
         monitor = VPSMonitor()
@@ -1402,8 +2067,10 @@ async def main():
         print("1. 检查config.json文件是否存在且配置正确")
         print("2. 确认Telegram Bot Token和Chat ID有效")
         print("3. 检查网络连接")
-        print("4. 安装selenium: pip install selenium")
+        print("4. 安装selenium: pip install selenium webdriver-manager")
         print("5. 查看monitor.log获取详细错误信息")
+        print("6. 确保admin_ids配置正确（多用户版必需）")
+
 
 if __name__ == '__main__':
     try:
