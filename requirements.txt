@@ -1,3 +1,5 @@
+# 修复 requirements.txt 文件，移除不需要的 sqlite3
+cat > requirements.txt << 'EOF'
 # VPSMonitorBot v2.0 - Python依赖包 (数据库优化版)
 # 作者: kure29
 # 网站: https://kure29.com
@@ -14,7 +16,6 @@ aiohttp>=3.9.1
 
 # Database support - SQLite async operations
 aiosqlite>=0.19.0
-sqlite3  # 通常内置，但确保可用
 
 # Compression support
 brotli>=1.1.0
@@ -48,7 +49,7 @@ pytz>=2023.3
 
 # Progress bars for CLI (optional)
 tqdm>=4.65.0
+EOF
 
-# Additional database utilities
-sqlalchemy>=2.0.0  # 如果需要ORM支持
-alembic>=1.13.0    # 数据库迁移工具
+# 现在重新安装依赖
+pip install -r requirements.txt
