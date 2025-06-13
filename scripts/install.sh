@@ -38,6 +38,47 @@ log_debug() {
     echo -e "${BLUE}[DEBUG]${NC} $1"
 }
 
+# 改进的用户确认函数
+ask_confirmation() {
+    local prompt="$1"
+    local default="${2:-N}"
+    local timeout="${3:-30}"
+    
+    while true; do
+        echo -e "${YELLOW}${prompt}${NC}"
+        echo -n "请输入选择 [y/N] (默认: $default, ${timeout}秒后自动选择): "
+        
+        # 使用read的超时功能
+        if read -t "$timeout" -r response; then
+            # 用户有输入
+            response=${response:-$default}
+            case "$response" in
+                [Yy]|[Yy][Ee][Ss])
+                    return 0
+                    ;;
+                [Nn]|[Nn][Oo]|"")
+                    return 1
+                    ;;
+                *)
+                    echo -e "${RED}无效输入，请输入 y 或 n${NC}"
+                    continue
+                    ;;
+            esac
+        else
+            # 超时，使用默认值
+            echo -e "\n${YELLOW}超时，使用默认选择: $default${NC}"
+            case "$default" in
+                [Yy])
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+        fi
+    done
+}
+
 # 显示Banner
 show_banner() {
     echo -e "${CYAN}"
@@ -79,6 +120,8 @@ VPS监控系统 v${VERSION} 安装脚本 - 数据库优化版
     --migrate           从v1.0自动迁移数据
     --init-db           只初始化数据库
     --check-db          检查数据库状态
+    --force             强制覆盖现有安装
+    --auto-yes          自动确认所有提示 (用于自动化安装)
 
 v2.0 新功能:
     --migrate           从JSON格式迁移到数据库
@@ -92,6 +135,7 @@ v2.0 新功能:
     $0 --migrate                    # 安装并迁移v1.0数据
     $0 --init-db                    # 只初始化数据库
     $0 --check-db                   # 检查数据库状态
+    $0 --force --auto-yes           # 强制安装，自动确认
 
 EOF
 }
@@ -152,6 +196,7 @@ detect_os() {
     
     log_debug "检测到操作系统: $OS $OS_VERSION"
 }
+
 # 检查Python版本
 check_python_version() {
     if command -v python3 >/dev/null 2>&1; then
@@ -217,21 +262,46 @@ install_system_deps() {
     log_info "系统依赖安装完成"
 }
 
-# 下载项目代码
+# 改进的下载项目代码函数
 download_project() {
     log_info "下载项目代码"
     
     local target_dir="$1"
+    local force_download="$2"
+    local auto_yes="$3"
     
     if [[ -d "$target_dir" ]]; then
         log_warn "目录已存在: $target_dir"
-        echo -n "是否删除现有目录并重新下载? [y/N] "
-        read -r confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        
+        # 检查目录是否包含项目文件
+        local has_project_files=false
+        if [[ -f "$target_dir/src/monitor.py" ]] || [[ -f "$target_dir/requirements.txt" ]]; then
+            has_project_files=true
+            log_info "检测到现有项目文件"
+        fi
+        
+        if [[ "$force_download" == true ]]; then
+            log_info "强制模式：删除现有目录"
             rm -rf "$target_dir"
-        else
-            log_info "使用现有目录"
+        elif [[ "$auto_yes" == true ]]; then
+            log_info "自动模式：使用现有目录"
             return 0
+        elif [[ "$has_project_files" == true ]]; then
+            if ask_confirmation "发现现有项目文件，是否删除并重新下载？" "N" 30; then
+                log_info "删除现有目录并重新下载"
+                rm -rf "$target_dir"
+            else
+                log_info "使用现有目录"
+                return 0
+            fi
+        else
+            if ask_confirmation "目录不为空，是否清空并重新下载？" "N" 30; then
+                log_info "清空目录并重新下载"
+                rm -rf "$target_dir"
+            else
+                log_info "使用现有目录"
+                return 0
+            fi
         fi
     fi
     
@@ -839,6 +909,8 @@ main_install() {
     local migrate_data=false
     local init_db_only=false
     local check_db_only=false
+    local force_download=false
+    local auto_yes=false
     local target_dir="$INSTALL_DIR"
     
     # 解析参数
@@ -878,6 +950,14 @@ main_install() {
                 ;;
             --check-db)
                 check_db_only=true
+                shift
+                ;;
+            --force)
+                force_download=true
+                shift
+                ;;
+            --auto-yes)
+                auto_yes=true
                 shift
                 ;;
             *)
@@ -938,7 +1018,7 @@ main_install() {
     if [[ "$no_download" == false ]]; then
         echo ""
         echo "=== 下载项目代码 ==="
-        download_project "$target_dir"
+        download_project "$target_dir" "$force_download" "$auto_yes"
     else
         log_info "跳过项目代码下载"
         if [[ ! -d "$target_dir" ]]; then
