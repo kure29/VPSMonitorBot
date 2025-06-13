@@ -2,9 +2,31 @@
 # VPS监控系统 v2.0 - 主管理菜单（优化版）
 # 作者: kure29
 # 网站: https://kure29.com
+#
+# 安全声明：此脚本不会删除任何项目文件或文件夹
+# 如果发现文件丢失，请检查运行环境和权限设置
 
-set -e
-cd "$(dirname "$0")/.."
+# 移除严格的set -e，改用更温和的错误处理
+set +e
+
+# 禁用可能危险的命令（防止意外调用）
+alias rm='echo "错误：rm命令在此脚本中被禁用以防止意外删除" && false'
+alias rmdir='echo "错误：rmdir命令在此脚本中被禁用以防止意外删除" && false'
+
+# 安全检查：确保工作目录正确
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 验证项目根目录的有效性
+if [[ ! -f "$PROJECT_ROOT/requirements.txt" ]] && [[ ! -f "$PROJECT_ROOT/src/monitor.py" ]] && [[ ! -d "$PROJECT_ROOT/venv" ]]; then
+    echo "错误：无法确定项目根目录，请确保脚本在正确的位置运行"
+    echo "当前检测到的项目根目录：$PROJECT_ROOT"
+    echo "脚本目录：$SCRIPT_DIR"
+    exit 1
+fi
+
+# 安全切换到项目根目录
+cd "$PROJECT_ROOT"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -20,6 +42,24 @@ NC='\033[0m' # No Color
 # 状态缓存
 declare -A status_cache
 cache_timeout=30
+
+# 安全检查函数
+safety_check() {
+    # 检查当前目录是否为项目根目录
+    if [[ ! -f "requirements.txt" ]] && [[ ! -d "src" ]] && [[ ! -d "venv" ]]; then
+        log_error "安全检查失败：当前目录不是有效的项目根目录"
+        log_error "当前路径：$(pwd)"
+        log_error "期望的项目结构：requirements.txt, src/, venv/"
+        return 1
+    fi
+    
+    # 检查关键文件（如果不存在，给出警告但不退出）
+    if [[ ! -f "src/monitor.py" ]]; then
+        log_warn "警告：缺少关键文件 src/monitor.py"
+    fi
+    
+    return 0
+}
 
 # 日志函数
 log_info() {
@@ -63,9 +103,15 @@ EOF
 cache_status() {
     local current_time=$(date +%s)
     
-    status_cache[monitor_status]=$(get_monitor_status_direct)
-    status_cache[process_info]=$(get_process_info_direct)
-    status_cache[monitor_count]=$(get_monitor_count_direct)
+    # 安全检查：确保我们在正确的项目目录
+    if [[ ! -f "requirements.txt" ]] || [[ ! -d "src" ]]; then
+        log_debug "项目目录验证失败，跳过状态缓存"
+        return 0  # 返回0以免影响脚本继续执行
+    fi
+    
+    status_cache[monitor_status]=$(get_monitor_status_direct 2>/dev/null || echo "未知")
+    status_cache[process_info]=$(get_process_info_direct 2>/dev/null || echo "无运行进程")
+    status_cache[monitor_count]=$(get_monitor_count_direct 2>/dev/null || echo "0")
     status_cache[cache_time]=$current_time
 }
 
@@ -136,18 +182,26 @@ check_venv() {
 # 创建虚拟环境
 create_venv() {
     log_info "创建Python虚拟环境..."
-    python3 -m venv venv
-    log_success "虚拟环境创建成功"
+    if python3 -m venv venv 2>/dev/null; then
+        log_success "虚拟环境创建成功"
+        return 0
+    else
+        log_error "虚拟环境创建失败"
+        return 1
+    fi
 }
 
 # 激活虚拟环境
 activate_venv() {
     if [[ -f "venv/bin/activate" ]]; then
-        source venv/bin/activate
+        source venv/bin/activate 2>/dev/null || {
+            log_warn "虚拟环境激活失败，但继续执行"
+            return 1
+        }
         log_debug "Python虚拟环境已激活"
         return 0
     else
-        log_error "虚拟环境不存在"
+        log_warn "虚拟环境不存在"
         return 1
     fi
 }
@@ -156,9 +210,13 @@ activate_venv() {
 install_dependencies() {
     log_info "安装Python依赖包..."
     if [[ -f "requirements.txt" ]]; then
-        pip install --upgrade pip
-        pip install -r requirements.txt
-        log_success "依赖安装完成"
+        if pip install --upgrade pip >/dev/null 2>&1 && pip install -r requirements.txt >/dev/null 2>&1; then
+            log_success "依赖安装完成"
+            return 0
+        else
+            log_error "依赖安装失败"
+            return 1
+        fi
     else
         log_error "未找到requirements.txt文件"
         return 1
@@ -221,24 +279,28 @@ init_environment() {
     # 检查Python
     log_info "正在设置Python环境..."
     if ! check_python; then
-        log_error "Python环境检查失败"
+        log_warn "Python环境检查失败，请手动检查Python安装"
         return 1
     fi
     
     # 检查并创建虚拟环境
     if ! check_venv; then
-        create_venv
+        log_info "虚拟环境不存在，尝试创建..."
+        if ! create_venv; then
+            log_warn "虚拟环境创建失败，某些功能可能不可用"
+            return 1
+        fi
     fi
     
     # 激活虚拟环境
     if ! activate_venv; then
-        log_error "无法激活虚拟环境"
+        log_warn "无法激活虚拟环境，某些功能可能不可用"
         return 1
     fi
     
     # 安装依赖
     if ! install_dependencies; then
-        log_error "依赖安装失败"
+        log_warn "依赖安装失败，某些功能可能不可用"
         return 1
     fi
     
@@ -248,9 +310,10 @@ init_environment() {
     fi
     
     # 检查数据库
-    check_database
+    check_database || log_info "数据库将在首次运行时创建"
     
     log_success "环境初始化完成"
+    return 0
 }
 
 # 直接获取监控状态（不使用缓存）
@@ -291,7 +354,14 @@ get_process_info() {
 
 # 直接获取监控商品数量（不使用缓存）
 get_monitor_count_direct() {
-    if [[ -f "vps_monitor.db" ]] && activate_venv; then
+    # 如果数据库不存在，返回0
+    if [[ ! -f "vps_monitor.db" ]]; then
+        echo "0"
+        return 0
+    fi
+    
+    # 尝试激活虚拟环境并查询数据库
+    if activate_venv >/dev/null 2>&1; then
         local count=$(python3 -c "
 import sqlite3
 try:
@@ -301,10 +371,10 @@ try:
     result = cursor.fetchone()
     print(result[0] if result else 0)
     conn.close()
-except:
+except Exception:
     print(0)
-" 2>/dev/null || echo "0")
-        echo "$count"
+" 2>/dev/null)
+        echo "${count:-0}"
     else
         echo "0"
     fi
@@ -317,9 +387,9 @@ get_monitor_count() {
 
 # 显示系统状态
 show_status() {
-    local status=$(get_monitor_status)
-    local process_info=$(get_process_info)
-    local monitor_count=$(get_monitor_count)
+    local status=$(get_monitor_status 2>/dev/null || echo "未知")
+    local process_info=$(get_process_info 2>/dev/null || echo "无运行进程")
+    local monitor_count=$(get_monitor_count 2>/dev/null || echo "0")
     
     echo "========================================"
     if [[ "$status" == "运行中" ]]; then
@@ -332,7 +402,7 @@ show_status() {
     
     # 显示数据库信息
     if [[ -f "vps_monitor.db" ]]; then
-        local db_size=$(du -h vps_monitor.db | cut -f1)
+        local db_size=$(du -h vps_monitor.db 2>/dev/null | cut -f1 || echo "未知")
         echo "数据库大小: $db_size"
     fi
     
@@ -514,13 +584,22 @@ stop_monitor() {
     echo "停止监控"
     echo "========"
     
+    # 安全检查：确保我们在正确的目录
+    if [[ ! -f "requirements.txt" ]] || [[ ! -d "src" ]]; then
+        log_error "当前目录不是项目根目录，拒绝执行停止操作"
+        return 1
+    fi
+    
     local pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || true)
     
     if [[ -n "$pids" ]]; then
         log_info "停止监控程序..."
         for pid in $pids; do
-            kill $pid
-            log_info "已发送停止信号给进程 $pid"
+            # 只发送停止信号，不执行任何文件操作
+            if kill -0 $pid 2>/dev/null; then
+                kill $pid
+                log_info "已发送停止信号给进程 $pid"
+            fi
         done
         
         # 等待进程停止
@@ -531,15 +610,17 @@ stop_monitor() {
         if [[ -n "$remaining_pids" ]]; then
             log_warn "强制停止残留进程..."
             for pid in $remaining_pids; do
-                kill -9 $pid
-                log_info "强制停止进程 $pid"
+                if kill -0 $pid 2>/dev/null; then
+                    kill -9 $pid
+                    log_info "强制停止进程 $pid"
+                fi
             done
         fi
         
         log_success "监控程序已停止"
         
-        # 清除缓存，强制刷新状态
-        unset status_cache
+        # 安全地清除缓存（仅清除内存变量）
+        unset status_cache 2>/dev/null || true
         declare -A status_cache
     else
         log_warn "监控程序未运行"
@@ -997,8 +1078,15 @@ exit(0 if result == 'ok' else 1)
         
         # 检查是否有过多错误
         local error_count=$(grep -c "ERROR" monitor.log 2>/dev/null || echo "0")
-        if [[ $error_count -gt 10 ]]; then
-            echo "⚠️  日志中发现较多错误 ($error_count 个)"
+        # 清理换行符和空白字符，确保是纯数字
+        error_count=$(echo "$error_count" | tr -d '\n\r\t ' | head -1)
+        # 验证是否为数字
+        if [[ "$error_count" =~ ^[0-9]+$ ]]; then
+            if [[ $error_count -gt 10 ]]; then
+                echo "⚠️  日志中发现较多错误 ($error_count 个)"
+            fi
+        else
+            log_debug "无法解析错误计数: '$error_count'"
         fi
     else
         echo "⚠️  日志文件不存在"
@@ -1183,21 +1271,39 @@ except Exception as e:
 # 备份数据库
 backup_database() {
     echo ""
+    
+    # 安全检查
+    if ! safety_check; then
+        log_error "安全检查失败，拒绝执行备份操作"
+        return 1
+    fi
+    
+    if [[ ! -f "vps_monitor.db" ]]; then
+        log_error "数据库文件不存在，无法备份"
+        return 1
+    fi
+    
     local backup_file="backup/vps_monitor_$(date +%Y%m%d_%H%M%S).db"
     
-    # 创建备份目录
-    mkdir -p backup
+    # 创建备份目录（安全方式）
+    if ! mkdir -p backup; then
+        log_error "无法创建备份目录"
+        return 1
+    fi
     
-    if cp vps_monitor.db "$backup_file"; then
+    # 使用cp命令复制文件（只复制，不删除原文件）
+    if cp "vps_monitor.db" "$backup_file"; then
         log_success "数据库备份成功: $backup_file"
         
-        # 压缩备份文件
+        # 压缩备份文件（可选）
         if command -v gzip >/dev/null 2>&1; then
-            gzip "$backup_file"
-            log_info "备份文件已压缩: ${backup_file}.gz"
+            if gzip "$backup_file"; then
+                log_info "备份文件已压缩: ${backup_file}.gz"
+            fi
         fi
     else
         log_error "数据库备份失败"
+        return 1
     fi
 }
 
@@ -1211,21 +1317,46 @@ export_database() {
     
     if activate_venv; then
         python3 -c "
-import sys
-sys.path.append('.')
-from database_manager import DatabaseManager
-import asyncio
+import sqlite3
+import json
+from datetime import datetime, timedelta
 
-async def export():
-    db = DatabaseManager()
-    await db.initialize()
-    success = await db.export_to_json('$export_file')
-    if success:
-        print('✅ 数据导出成功: $export_file')
-    else:
-        print('❌ 数据导出失败')
-
-asyncio.run(export())
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    export_data = {
+        'export_time': datetime.now().isoformat(),
+        'version': '2.0',
+        'monitor_items': [],
+        'check_history': []
+    }
+    
+    # 导出监控项目
+    cursor.execute('SELECT * FROM monitor_items')
+    items = cursor.fetchall()
+    for item in items:
+        export_data['monitor_items'].append(dict(item))
+    
+    # 导出最近30天的检查历史
+    since = (datetime.now() - timedelta(days=30)).isoformat()
+    cursor.execute('SELECT * FROM check_history WHERE check_time >= ? ORDER BY check_time DESC LIMIT 1000', (since,))
+    history = cursor.fetchall()
+    for record in history:
+        export_data['check_history'].append(dict(record))
+    
+    # 保存到文件
+    with open('$export_file', 'w', encoding='utf-8') as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+    
+    print(f'✅ 数据导出成功: $export_file')
+    print(f'导出了 {len(export_data[\"monitor_items\"])} 个监控项目')
+    print(f'导出了 {len(export_data[\"check_history\"])} 条检查记录')
+    
+    conn.close()
+except Exception as e:
+    print(f'❌ 数据导出失败: {e}')
 " 2>&1
     fi
 }
@@ -1243,21 +1374,65 @@ import_database() {
     
     if activate_venv; then
         python3 -c "
-import sys
-sys.path.append('.')
-from database_manager import DatabaseManager
-import asyncio
+import sqlite3
+import json
+from datetime import datetime
 
-async def import_data():
-    db = DatabaseManager()
-    await db.initialize()
-    success = await db.import_from_json('$import_file')
-    if success:
-        print('✅ 数据导入成功')
-    else:
-        print('❌ 数据导入失败')
-
-asyncio.run(import_data())
+try:
+    # 读取JSON文件
+    with open('$import_file', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    imported_items = 0
+    imported_history = 0
+    
+    # 导入监控项目
+    if 'monitor_items' in data:
+        for item in data['monitor_items']:
+            try:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO monitor_items (name, url, config, enabled, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    item.get('name', ''),
+                    item.get('url', ''),
+                    item.get('config', ''),
+                    item.get('enabled', 1),
+                    item.get('created_at', datetime.now().isoformat())
+                ))
+                imported_items += 1
+            except Exception as e:
+                print(f'导入项目失败: {e}')
+    
+    # 导入检查历史（可选）
+    if 'check_history' in data:
+        for record in data['check_history']:
+            try:
+                cursor.execute('''
+                    INSERT OR IGNORE INTO check_history (item_id, check_time, status, error_message)
+                    VALUES (?, ?, ?, ?)
+                ''', (
+                    record.get('item_id'),
+                    record.get('check_time'),
+                    record.get('status', 0),
+                    record.get('error_message', '')
+                ))
+                imported_history += 1
+            except Exception as e:
+                print(f'导入历史记录失败: {e}')
+    
+    conn.commit()
+    conn.close()
+    
+    print(f'✅ 数据导入成功')
+    print(f'导入了 {imported_items} 个监控项目')
+    print(f'导入了 {imported_history} 条检查记录')
+    
+except Exception as e:
+    print(f'❌ 数据导入失败: {e}')
 " 2>&1
     fi
 }
@@ -1272,20 +1447,64 @@ cleanup_database() {
         days=90
     fi
     
+    # 输入验证
+    if ! [[ "$days" =~ ^[0-9]+$ ]] || [[ $days -lt 1 ]] || [[ $days -gt 3650 ]]; then
+        log_error "无效的天数，必须是1-3650之间的数字"
+        return 1
+    fi
+    
+    # 安全检查：确保数据库文件存在且我们在正确目录
+    if [[ ! -f "vps_monitor.db" ]]; then
+        log_error "数据库文件不存在"
+        return 1
+    fi
+    
+    if [[ ! -f "requirements.txt" ]] || [[ ! -d "src" ]]; then
+        log_error "项目目录验证失败，拒绝执行数据库清理"
+        return 1
+    fi
+    
+    echo "⚠️  即将清理 $days 天前的历史记录"
+    echo -n "确认继续？(y/N): "
+    read -r confirm
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo "操作已取消"
+        return 0
+    fi
+    
     if activate_venv; then
         python3 -c "
-import sys
-sys.path.append('.')
-from database_manager import DatabaseManager
-import asyncio
+import sqlite3
+from datetime import datetime, timedelta
 
-async def cleanup():
-    db = DatabaseManager()
-    await db.initialize()
-    deleted = await db.cleanup_old_history(days=$days)
-    print(f'✅ 已清理 {deleted} 条历史记录')
-
-asyncio.run(cleanup())
+try:
+    # 连接数据库
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 计算清理的截止时间
+    cutoff_time = (datetime.now() - timedelta(days=$days)).isoformat()
+    
+    # 先查询要删除的记录数
+    cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time < ?', (cutoff_time,))
+    count = cursor.fetchone()[0]
+    
+    if count == 0:
+        print('没有找到需要清理的记录')
+    else:
+        print(f'找到 {count} 条历史记录')
+        
+        # 仅删除数据库记录，不删除任何文件
+        cursor.execute('DELETE FROM check_history WHERE check_time < ?', (cutoff_time,))
+        deleted = cursor.rowcount
+        
+        conn.commit()
+        print(f'✅ 已清理 {deleted} 条历史记录')
+    
+    conn.close()
+except Exception as e:
+    print(f'❌ 清理失败: {e}')
 " 2>&1
     fi
 }
@@ -1341,52 +1560,89 @@ migrate_from_json() {
     if activate_venv; then
         python3 -c "
 import json
-import asyncio
-from database_manager import DatabaseManager
+import sqlite3
+from datetime import datetime
 
-async def migrate():
-    try:
-        # 读取旧数据
-        with open('urls.json', 'r', encoding='utf-8') as f:
-            old_data = json.load(f)
+try:
+    # 读取旧数据
+    with open('urls.json', 'r', encoding='utf-8') as f:
+        old_data = json.load(f)
+    
+    print(f'📄 发现 {len(old_data)} 个监控项')
+    
+    # 连接数据库
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 确保表存在
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS monitor_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL UNIQUE,
+            config TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    migrated = 0
+    skipped = 0
+    
+    for item_id, item_data in old_data.items():
+        name = item_data.get('名称', f'商品{item_id}')
+        url = item_data.get('URL', '')
+        config = item_data.get('配置', '')
         
-        # 初始化数据库
-        db = DatabaseManager()
-        await db.initialize()
+        if not url:
+            print(f'⏭️  跳过无效URL: {name}')
+            skipped += 1
+            continue
         
-        # 迁移数据
-        migrated = 0
-        for item_id, item_data in old_data.items():
-            name = item_data.get('名称', '')
-            url = item_data.get('URL', '')
-            config = item_data.get('配置', '')
-            
-            # 检查是否已存在
-            existing = await db.get_monitor_item_by_url(url)
-            if not existing:
-                await db.add_monitor_item(name, url, config)
-                migrated += 1
-                print(f'  ✅ 已迁移: {name}')
-            else:
-                print(f'  ⏭️  跳过已存在: {name}')
+        # 检查是否已存在
+        cursor.execute('SELECT id FROM monitor_items WHERE url = ?', (url,))
+        existing = cursor.fetchone()
         
-        print(f'\\n✅ 迁移完成，共迁移 {migrated} 个商品')
+        if existing:
+            print(f'⏭️  跳过已存在: {name}')
+            skipped += 1
+            continue
         
-        # 备份旧文件
-        import shutil
-        shutil.copy('urls.json', 'urls.json.backup')
-        print('✅ 旧数据已备份到 urls.json.backup')
-        
-    except Exception as e:
-        print(f'❌ 迁移失败: {e}')
-
-asyncio.run(migrate())
+        # 添加到数据库
+        try:
+            cursor.execute('''
+                INSERT INTO monitor_items (name, url, config, enabled, created_at)
+                VALUES (?, ?, ?, 1, ?)
+            ''', (name, url, config, datetime.now().isoformat()))
+            print(f'✅ 已迁移: {name}')
+            migrated += 1
+        except Exception as e:
+            print(f'❌ 迁移失败 {name}: {e}')
+            skipped += 1
+    
+    conn.commit()
+    conn.close()
+    
+    print(f'\\n📊 迁移完成')
+    print(f'✅ 成功迁移: {migrated} 个')
+    print(f'⏭️  跳过项目: {skipped} 个')
+    
+    # 备份原文件
+    import shutil
+    backup_file = f'urls.json.backup.{datetime.now().strftime(\"%Y%m%d_%H%M%S\")}'
+    shutil.copy('urls.json', backup_file)
+    print(f'✅ 旧数据已备份到 {backup_file}')
+    
+except Exception as e:
+    print(f'❌ 迁移失败: {e}')
 " 2>&1
     fi
 }
 
 # 主菜单
 show_menu() {
+    log_debug "正在启动主菜单..."
+    
     while true; do
         clear
         show_banner
@@ -1399,8 +1655,8 @@ show_menu() {
         echo "4. 查看监控状态"
         echo "5. 查看监控日志"
         echo "6. 数据库管理"
-        echo "7. 数据统计分析         ${CYAN}[新功能]${NC}"
-        echo "8. 系统健康检查         ${CYAN}[新功能]${NC}"
+        echo "7. 数据统计分析"
+        echo "8. 系统健康检查"
         echo "9. 从旧版本迁移数据"
         echo "0. 退出"
         echo "===================="
@@ -1419,7 +1675,7 @@ show_menu() {
         echo -e "监控商品: ${WHITE}$monitor_count${NC} 个"
         
         if [[ -f "vps_monitor.db" ]]; then
-            local db_size=$(du -h vps_monitor.db | cut -f1)
+            local db_size=$(du -h vps_monitor.db 2>/dev/null | cut -f1 || echo "未知")
             echo -e "数据库: ${WHITE}$db_size${NC}"
         fi
         
@@ -1484,15 +1740,31 @@ show_menu() {
 
 # 主函数
 main() {
-    # 检查是否首次运行
-    if [[ ! -f "venv/bin/activate" ]] || [[ ! -f "config.json" ]]; then
-        init_environment
+    # 显示当前工作目录（用于调试）
+    log_debug "当前工作目录: $(pwd)"
+    
+    # 进行安全检查
+    if safety_check; then
+        log_debug "项目根目录验证通过"
+    else
+        log_warn "安全检查有警告，但继续执行"
     fi
     
-    # 预缓存状态信息
+    # 检查是否首次运行（允许失败）
+    log_debug "检查环境状态..."
+    if [[ ! -f "venv/bin/activate" ]] || [[ ! -f "config.json" ]]; then
+        log_info "检测到首次运行或环境不完整，开始初始化..."
+        if ! init_environment; then
+            log_warn "环境初始化遇到问题，但继续执行"
+        fi
+    fi
+    
+    # 预缓存状态信息（允许失败）
+    log_debug "缓存状态信息..."
     cache_status
     
     # 显示主菜单
+    log_debug "启动主菜单..."
     show_menu
 }
 
