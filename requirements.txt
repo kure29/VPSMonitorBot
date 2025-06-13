@@ -1,6 +1,4 @@
-# 修复 requirements.txt 文件，移除不需要的 sqlite3
-cat > requirements.txt << 'EOF'
-# VPSMonitorBot v2.0 - Python依赖包 (数据库优化版)
+# VPSMonitorBot v3.0 - Python依赖包 (多用户智能监控版)
 # 作者: kure29
 # 网站: https://kure29.com
 
@@ -17,13 +15,19 @@ aiohttp>=3.9.1
 # Database support - SQLite async operations
 aiosqlite>=0.19.0
 
+# Selenium for DOM monitoring (optional but recommended)
+selenium>=4.15.0
+
+# Chrome WebDriver (automatically downloads)
+webdriver-manager>=4.0.0
+
 # Compression support
 brotli>=1.1.0
 
 # Async file operations
 aiofiles>=23.2.0
 
-# Data validation (optional but recommended)
+# Data validation
 pydantic>=2.0.0
 
 # Better error handling and retry logic
@@ -49,7 +53,15 @@ pytz>=2023.3
 
 # Progress bars for CLI (optional)
 tqdm>=4.65.0
-EOF
 
-# 现在重新安装依赖
-pip install -r requirements.txt
+# Image processing for visual comparison (optional)
+Pillow>=10.0.0
+
+# HTTP/2 support
+httpx>=0.25.0
+
+# Better JSON handling
+orjson>=3.9.0
+
+# Memory optimization
+psutil>=5.9.0
