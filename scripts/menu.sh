@@ -1,5 +1,5 @@
 #!/bin/bash
-# VPS监控系统 v2.0 - 主管理菜单
+# VPS监控系统 v2.0 - 主管理菜单（优化版）
 # 作者: kure29
 # 网站: https://kure29.com
 
@@ -13,7 +13,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;37m'
 NC='\033[0m' # No Color
+
+# 状态缓存
+declare -A status_cache
+cache_timeout=30
 
 # 日志函数
 log_info() {
@@ -30,6 +36,10 @@ log_error() {
 
 log_debug() {
     echo -e "${BLUE}[DEBUG]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 # 显示Banner
@@ -49,11 +59,56 @@ EOF
     echo ""
 }
 
+# 缓存状态信息
+cache_status() {
+    local current_time=$(date +%s)
+    
+    status_cache[monitor_status]=$(get_monitor_status_direct)
+    status_cache[process_info]=$(get_process_info_direct)
+    status_cache[monitor_count]=$(get_monitor_count_direct)
+    status_cache[cache_time]=$current_time
+}
+
+# 获取缓存的状态信息
+get_cached_status() {
+    local cache_time=${status_cache[cache_time]:-0}
+    local current_time=$(date +%s)
+    
+    # 缓存超过指定时间则刷新
+    if (( current_time - cache_time > cache_timeout )); then
+        cache_status
+    fi
+    
+    echo "${status_cache[monitor_status]}"
+}
+
+get_cached_process_info() {
+    local cache_time=${status_cache[cache_time]:-0}
+    local current_time=$(date +%s)
+    
+    if (( current_time - cache_time > cache_timeout )); then
+        cache_status
+    fi
+    
+    echo "${status_cache[process_info]}"
+}
+
+get_cached_monitor_count() {
+    local cache_time=${status_cache[cache_time]:-0}
+    local current_time=$(date +%s)
+    
+    if (( current_time - cache_time > cache_timeout )); then
+        cache_status
+    fi
+    
+    echo "${status_cache[monitor_count]}"
+}
+
 # 检查Python环境
 check_python() {
     if command -v python3 >/dev/null 2>&1; then
         local python_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        log_info "检测到Python版本: $python_version"
+        log_debug "检测到Python版本: $python_version"
         
         if python3 -c "import sys; exit(0 if sys.version_info >= (3, 7) else 1)"; then
             return 0
@@ -70,7 +125,7 @@ check_python() {
 # 检查虚拟环境
 check_venv() {
     if [[ -d "venv" && -f "venv/bin/activate" ]]; then
-        log_info "找到Python虚拟环境"
+        log_debug "找到Python虚拟环境"
         return 0
     else
         log_warn "未找到Python虚拟环境"
@@ -82,14 +137,14 @@ check_venv() {
 create_venv() {
     log_info "创建Python虚拟环境..."
     python3 -m venv venv
-    log_info "虚拟环境创建成功"
+    log_success "虚拟环境创建成功"
 }
 
 # 激活虚拟环境
 activate_venv() {
     if [[ -f "venv/bin/activate" ]]; then
         source venv/bin/activate
-        log_info "Python虚拟环境已激活"
+        log_debug "Python虚拟环境已激活"
         return 0
     else
         log_error "虚拟环境不存在"
@@ -103,7 +158,7 @@ install_dependencies() {
     if [[ -f "requirements.txt" ]]; then
         pip install --upgrade pip
         pip install -r requirements.txt
-        log_info "依赖安装完成"
+        log_success "依赖安装完成"
     else
         log_error "未找到requirements.txt文件"
         return 1
@@ -114,7 +169,7 @@ install_dependencies() {
 check_config() {
     if [[ -f "config.json" ]]; then
         if python3 -c "import json; json.load(open('config.json'))" 2>/dev/null; then
-            log_info "配置文件格式正确"
+            log_debug "配置文件格式正确"
             
             # 检查关键配置
             local bot_token=$(python3 -c "import json; print(json.load(open('config.json')).get('bot_token', ''))" 2>/dev/null)
@@ -130,7 +185,7 @@ check_config() {
                 return 1
             fi
             
-            log_info "配置文件检查通过"
+            log_debug "配置文件检查通过"
             return 0
         else
             log_error "配置文件格式错误"
@@ -149,9 +204,9 @@ check_config() {
 # 检查数据库
 check_database() {
     if [[ -f "vps_monitor.db" ]]; then
-        log_info "发现数据库文件: vps_monitor.db"
+        log_debug "发现数据库文件: vps_monitor.db"
         local size=$(du -h vps_monitor.db | cut -f1)
-        log_info "数据库大小: $size"
+        log_debug "数据库大小: $size"
         return 0
     else
         log_info "数据库文件不存在，将在首次运行时创建"
@@ -195,11 +250,11 @@ init_environment() {
     # 检查数据库
     check_database
     
-    log_info "环境初始化完成"
+    log_success "环境初始化完成"
 }
 
-# 获取监控状态
-get_monitor_status() {
+# 直接获取监控状态（不使用缓存）
+get_monitor_status_direct() {
     local pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || true)
     if [[ -n "$pids" ]]; then
         echo "运行中"
@@ -210,8 +265,13 @@ get_monitor_status() {
     fi
 }
 
-# 获取进程信息
-get_process_info() {
+# 获取监控状态（使用缓存）
+get_monitor_status() {
+    get_cached_status
+}
+
+# 直接获取进程信息（不使用缓存）
+get_process_info_direct() {
     local pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || true)
     if [[ -n "$pids" ]]; then
         for pid in $pids; do
@@ -224,8 +284,13 @@ get_process_info() {
     fi
 }
 
-# 获取监控商品数量
-get_monitor_count() {
+# 获取进程信息（使用缓存）
+get_process_info() {
+    get_cached_process_info
+}
+
+# 直接获取监控商品数量（不使用缓存）
+get_monitor_count_direct() {
     if [[ -f "vps_monitor.db" ]] && activate_venv; then
         local count=$(python3 -c "
 import sqlite3
@@ -243,6 +308,11 @@ except:
     else
         echo "0"
     fi
+}
+
+# 获取监控商品数量（使用缓存）
+get_monitor_count() {
+    get_cached_monitor_count
 }
 
 # 显示系统状态
@@ -264,6 +334,25 @@ show_status() {
     if [[ -f "vps_monitor.db" ]]; then
         local db_size=$(du -h vps_monitor.db | cut -f1)
         echo "数据库大小: $db_size"
+    fi
+    
+    # 显示智能提示
+    show_smart_hints
+}
+
+# 智能提示
+show_smart_hints() {
+    echo ""
+    if [[ ! -f "config.json" ]]; then
+        echo -e "${YELLOW}💡 提示: 请先配置Telegram信息${NC}"
+    elif ! check_config >/dev/null 2>&1; then
+        echo -e "${YELLOW}💡 提示: 配置文件需要更新${NC}"
+    elif [[ $(get_monitor_status) == "已停止" ]]; then
+        echo -e "${YELLOW}💡 提示: 监控未运行，建议启动监控${NC}"
+    elif [[ $(get_monitor_count) == "0" ]]; then
+        echo -e "${YELLOW}💡 提示: 尚未添加监控商品${NC}"
+    else
+        echo -e "${GREEN}💡 系统运行正常${NC}"
     fi
 }
 
@@ -326,7 +415,11 @@ configure_telegram() {
 }
 EOF
     
-    log_info "配置文件已保存"
+    log_success "配置文件已保存"
+    
+    # 清除缓存，强制刷新状态
+    unset status_cache
+    declare -A status_cache
     
     # 测试配置
     echo -n "是否测试Telegram连接? (y/N): "
@@ -378,7 +471,7 @@ start_monitor() {
     echo "========"
     
     # 检查是否已在运行
-    if get_monitor_status >/dev/null; then
+    if get_monitor_status_direct >/dev/null; then
         log_warn "监控程序已在运行中"
         return 1
     fi
@@ -404,8 +497,12 @@ start_monitor() {
     sleep 3
     
     if kill -0 $pid 2>/dev/null; then
-        log_info "监控程序启动成功 (PID: $pid)"
+        log_success "监控程序启动成功 (PID: $pid)"
         log_info "日志文件: monitor.log"
+        
+        # 清除缓存，强制刷新状态
+        unset status_cache
+        declare -A status_cache
     else
         log_error "监控程序启动失败，请查看日志文件"
         return 1
@@ -439,7 +536,11 @@ stop_monitor() {
             done
         fi
         
-        log_info "监控程序已停止"
+        log_success "监控程序已停止"
+        
+        # 清除缓存，强制刷新状态
+        unset status_cache
+        declare -A status_cache
     else
         log_warn "监控程序未运行"
     fi
@@ -447,12 +548,12 @@ stop_monitor() {
 
 # 查看监控状态
 check_monitor_status() {
-    echo "监控状态"
-    echo "========"
+    echo "监控状态详情"
+    echo "============"
     
-    local status=$(get_monitor_status)
-    local process_info=$(get_process_info)
-    local monitor_count=$(get_monitor_count)
+    local status=$(get_monitor_status_direct)
+    local process_info=$(get_process_info_direct)
+    local monitor_count=$(get_monitor_count_direct)
     
     if [[ "$status" == "运行中" ]]; then
         echo -e "状态: ${GREEN}$status${NC}"
@@ -479,6 +580,11 @@ check_monitor_status() {
     fi
     
     # 显示数据库统计
+    show_database_stats
+}
+
+# 显示数据库统计
+show_database_stats() {
     if [[ -f "vps_monitor.db" ]] && activate_venv; then
         echo ""
         echo "数据库统计:"
@@ -506,10 +612,427 @@ try:
         success_rate = (success_24h / checks_24h) * 100
         print(f'成功率: {success_rate:.1f}%')
     
+    # 获取商品统计
+    cursor.execute('SELECT COUNT(*) FROM monitor_items WHERE enabled = 1')
+    enabled_items = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM monitor_items WHERE enabled = 0')
+    disabled_items = cursor.fetchone()[0]
+    
+    print(f'启用商品: {enabled_items} 个')
+    print(f'禁用商品: {disabled_items} 个')
+    
     conn.close()
 except Exception as e:
     print(f'获取统计失败: {e}')
 " 2>&1
+    fi
+}
+
+# 数据统计分析
+show_statistics() {
+    echo "数据统计分析"
+    echo "============"
+    
+    if [[ ! -f "vps_monitor.db" ]]; then
+        log_error "数据库文件不存在"
+        return 1
+    fi
+    
+    if ! activate_venv; then
+        return 1
+    fi
+    
+    echo "1. 成功率趋势分析"
+    echo "2. 商品可用性统计"
+    echo "3. 检查频率分析"
+    echo "4. 最近错误统计"
+    echo "5. 导出统计报告"
+    echo "0. 返回主菜单"
+    echo ""
+    echo -n "请选择分析类型 (0-5): "
+    read -r choice
+    
+    case $choice in
+        1)
+            analyze_success_rate
+            ;;
+        2)
+            analyze_item_availability
+            ;;
+        3)
+            analyze_check_frequency
+            ;;
+        4)
+            analyze_recent_errors
+            ;;
+        5)
+            export_statistics
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            log_error "无效选择"
+            ;;
+    esac
+}
+
+# 分析成功率趋势
+analyze_success_rate() {
+    echo ""
+    echo "成功率趋势分析"
+    echo "=============="
+    
+    python3 -c "
+import sqlite3
+from datetime import datetime, timedelta
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 按天统计最近7天的成功率
+    for i in range(7, 0, -1):
+        date = datetime.now() - timedelta(days=i)
+        start_time = date.replace(hour=0, minute=0, second=0).isoformat()
+        end_time = date.replace(hour=23, minute=59, second=59).isoformat()
+        
+        cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ? AND check_time <= ?', (start_time, end_time))
+        total = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ? AND check_time <= ? AND status = 1', (start_time, end_time))
+        success = cursor.fetchone()[0]
+        
+        if total > 0:
+            rate = (success / total) * 100
+            bar = '█' * int(rate / 5) + '░' * (20 - int(rate / 5))
+            print(f'{date.strftime(\"%m-%d\")}: {bar} {rate:.1f}% ({success}/{total})')
+        else:
+            print(f'{date.strftime(\"%m-%d\")}: 无检查记录')
+    
+    conn.close()
+except Exception as e:
+    print(f'分析失败: {e}')
+" 2>&1
+}
+
+# 分析商品可用性
+analyze_item_availability() {
+    echo ""
+    echo "商品可用性统计"
+    echo "=============="
+    
+    python3 -c "
+import sqlite3
+from datetime import datetime, timedelta
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 获取所有商品的最新状态
+    cursor.execute('''
+        SELECT m.name, m.url, h.status, h.check_time
+        FROM monitor_items m
+        LEFT JOIN (
+            SELECT item_id, status, check_time
+            FROM check_history h1
+            WHERE check_time = (
+                SELECT MAX(check_time)
+                FROM check_history h2
+                WHERE h2.item_id = h1.item_id
+            )
+        ) h ON m.id = h.item_id
+        WHERE m.enabled = 1
+        ORDER BY m.name
+    ''')
+    
+    results = cursor.fetchall()
+    
+    print(f'{"商品名称":<20} {"状态":<8} {"最后检查时间"}')
+    print('-' * 60)
+    
+    available = 0
+    unavailable = 0
+    unknown = 0
+    
+    for name, url, status, check_time in results:
+        if status is None:
+            status_text = '未知'
+            unknown += 1
+        elif status == 1:
+            status_text = '可用'
+            available += 1
+        else:
+            status_text = '不可用'
+            unavailable += 1
+        
+        if check_time:
+            check_time = datetime.fromisoformat(check_time).strftime('%m-%d %H:%M')
+        else:
+            check_time = '从未检查'
+        
+        print(f'{name[:20]:<20} {status_text:<8} {check_time}')
+    
+    print('')
+    print(f'可用: {available}, 不可用: {unavailable}, 未知: {unknown}')
+    
+    conn.close()
+except Exception as e:
+    print(f'分析失败: {e}')
+" 2>&1
+}
+
+# 分析检查频率
+analyze_check_frequency() {
+    echo ""
+    echo "检查频率分析"
+    echo "============"
+    
+    python3 -c "
+import sqlite3
+from datetime import datetime, timedelta
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 按小时统计最近24小时的检查次数
+    print('最近24小时检查频率:')
+    print('时间段      检查次数')
+    print('-' * 25)
+    
+    for i in range(24, 0, -1):
+        start_time = datetime.now() - timedelta(hours=i)
+        end_time = start_time + timedelta(hours=1)
+        
+        cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ? AND check_time < ?', 
+                      (start_time.isoformat(), end_time.isoformat()))
+        count = cursor.fetchone()[0]
+        
+        bar = '█' * min(count, 20)
+        print(f'{start_time.strftime(\"%H:00\")}:    {bar} {count}')
+    
+    # 平均检查间隔
+    cursor.execute('SELECT check_time FROM check_history ORDER BY check_time DESC LIMIT 100')
+    times = [datetime.fromisoformat(row[0]) for row in cursor.fetchall()]
+    
+    if len(times) > 1:
+        intervals = [(times[i] - times[i+1]).total_seconds() for i in range(len(times)-1)]
+        avg_interval = sum(intervals) / len(intervals)
+        print(f'\\n平均检查间隔: {avg_interval:.0f} 秒')
+    
+    conn.close()
+except Exception as e:
+    print(f'分析失败: {e}')
+" 2>&1
+}
+
+# 分析最近错误
+analyze_recent_errors() {
+    echo ""
+    echo "最近错误统计"
+    echo "============"
+    
+    python3 -c "
+import sqlite3
+from datetime import datetime, timedelta
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 获取最近的错误记录
+    since = (datetime.now() - timedelta(days=7)).isoformat()
+    cursor.execute('''
+        SELECT m.name, h.check_time, h.error_message
+        FROM check_history h
+        JOIN monitor_items m ON h.item_id = m.id
+        WHERE h.status = 0 AND h.check_time >= ?
+        ORDER BY h.check_time DESC
+        LIMIT 20
+    ''', (since,))
+    
+    results = cursor.fetchall()
+    
+    if results:
+        print(f'{"时间":<16} {"商品名称":<20} {"错误信息"}')
+        print('-' * 70)
+        
+        for name, check_time, error_msg in results:
+            check_time = datetime.fromisoformat(check_time).strftime('%m-%d %H:%M')
+            error_msg = error_msg[:30] + '...' if error_msg and len(error_msg) > 30 else error_msg or '未知错误'
+            print(f'{check_time:<16} {name[:20]:<20} {error_msg}')
+    else:
+        print('最近7天内没有错误记录')
+    
+    conn.close()
+except Exception as e:
+    print(f'分析失败: {e}')
+" 2>&1
+}
+
+# 导出统计报告
+export_statistics() {
+    echo ""
+    echo "导出统计报告"
+    echo "============"
+    
+    local export_file="reports/statistics_report_$(date +%Y%m%d_%H%M%S).txt"
+    
+    # 创建报告目录
+    mkdir -p reports
+    
+    if activate_venv; then
+        python3 -c "
+import sqlite3
+from datetime import datetime, timedelta
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    report = []
+    report.append(f'VPS监控系统统计报告')
+    report.append(f'生成时间: {datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}')
+    report.append('=' * 50)
+    report.append('')
+    
+    # 总体统计
+    cursor.execute('SELECT COUNT(*) FROM monitor_items WHERE enabled = 1')
+    enabled_count = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM check_history')
+    total_checks = cursor.fetchone()[0]
+    
+    since_24h = (datetime.now() - timedelta(days=1)).isoformat()
+    cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ?', (since_24h,))
+    checks_24h = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM check_history WHERE check_time >= ? AND status = 1', (since_24h,))
+    success_24h = cursor.fetchone()[0]
+    
+    report.append('总体统计:')
+    report.append(f'  活跃监控商品: {enabled_count} 个')
+    report.append(f'  历史检查总数: {total_checks} 次')
+    report.append(f'  24小时检查: {checks_24h} 次')
+    if checks_24h > 0:
+        success_rate = (success_24h / checks_24h) * 100
+        report.append(f'  24小时成功率: {success_rate:.1f}%')
+    report.append('')
+    
+    # 保存报告
+    with open('$export_file', 'w', encoding='utf-8') as f:
+        f.write('\\n'.join(report))
+    
+    print(f'报告已导出到: $export_file')
+    conn.close()
+except Exception as e:
+    print(f'导出失败: {e}')
+" 2>&1
+    fi
+}
+
+# 系统健康检查
+health_check() {
+    echo "系统健康检查"
+    echo "============"
+    
+    local issues=0
+    
+    echo "🔍 检查环境..."
+    
+    # 检查Python环境
+    if check_python >/dev/null 2>&1; then
+        echo "✅ Python环境正常"
+    else
+        echo "❌ Python环境异常"
+        ((issues++))
+    fi
+    
+    # 检查虚拟环境
+    if check_venv >/dev/null 2>&1; then
+        echo "✅ 虚拟环境正常"
+    else
+        echo "❌ 虚拟环境异常"
+        ((issues++))
+    fi
+    
+    # 检查配置文件
+    if check_config >/dev/null 2>&1; then
+        echo "✅ 配置文件正常"
+    else
+        echo "❌ 配置文件异常"
+        ((issues++))
+    fi
+    
+    # 检查数据库
+    if check_database >/dev/null 2>&1; then
+        echo "✅ 数据库文件存在"
+        
+        # 检查数据库完整性
+        if activate_venv && python3 -c "
+import sqlite3
+conn = sqlite3.connect('vps_monitor.db')
+cursor = conn.cursor()
+cursor.execute('PRAGMA integrity_check')
+result = cursor.fetchone()[0]
+conn.close()
+exit(0 if result == 'ok' else 1)
+" 2>/dev/null; then
+            echo "✅ 数据库完整性正常"
+        else
+            echo "❌ 数据库完整性异常"
+            ((issues++))
+        fi
+    else
+        echo "⚠️  数据库文件不存在"
+    fi
+    
+    # 检查日志文件
+    if [[ -f "monitor.log" ]]; then
+        local log_size=$(du -h monitor.log | cut -f1)
+        echo "✅ 日志文件存在 (大小: $log_size)"
+        
+        # 检查是否有过多错误
+        local error_count=$(grep -c "ERROR" monitor.log 2>/dev/null || echo "0")
+        if [[ $error_count -gt 10 ]]; then
+            echo "⚠️  日志中发现较多错误 ($error_count 个)"
+        fi
+    else
+        echo "⚠️  日志文件不存在"
+    fi
+    
+    # 检查磁盘空间
+    local disk_usage=$(df -h . | awk 'NR==2 {print $5}' | sed 's/%//')
+    if [[ $disk_usage -lt 90 ]]; then
+        echo "✅ 磁盘空间充足 (已使用: ${disk_usage}%)"
+    else
+        echo "❌ 磁盘空间不足 (已使用: ${disk_usage}%)"
+        ((issues++))
+    fi
+    
+    # 检查网络连接
+    echo ""
+    echo "🌐 检查网络连接..."
+    if curl -s --connect-timeout 5 https://api.telegram.org >/dev/null; then
+        echo "✅ Telegram API 连接正常"
+    else
+        echo "❌ Telegram API 连接失败"
+        ((issues++))
+    fi
+    
+    # 生成健康报告
+    echo ""
+    echo "📊 健康检查报告:"
+    echo "================"
+    if [[ $issues -eq 0 ]]; then
+        echo -e "${GREEN}🎉 系统健康状况良好，没有发现问题！${NC}"
+    elif [[ $issues -eq 1 ]]; then
+        echo -e "${YELLOW}⚠️  发现 $issues 个问题，建议修复${NC}"
+    else
+        echo -e "${RED}❌ 发现 $issues 个问题，需要立即处理${NC}"
     fi
 }
 
@@ -532,7 +1055,8 @@ view_logs() {
     echo "2. 查看全部日志"
     echo "3. 实时监控日志"
     echo "4. 查看错误日志"
-    echo -n "请选择 (1-4): "
+    echo "5. 按时间查看日志"
+    echo -n "请选择 (1-5): "
     read -r choice
     
     case $choice in
@@ -556,6 +1080,13 @@ view_logs() {
             echo "========"
             grep -i "error\|exception\|fail" monitor.log | tail -n 20
             ;;
+        5)
+            echo -n "请输入查看时间 (格式: 2024-01-01): "
+            read -r date_filter
+            echo "指定日期日志:"
+            echo "============="
+            grep "$date_filter" monitor.log || echo "未找到指定日期的日志"
+            ;;
         *)
             log_error "无效选择"
             ;;
@@ -577,7 +1108,8 @@ manage_database() {
     echo "3. 导出数据到JSON"
     echo "4. 从JSON导入数据"
     echo "5. 清理历史数据"
-    echo -n "请选择操作 (1-5): "
+    echo "6. 数据库优化"
+    echo -n "请选择操作 (1-6): "
     read -r choice
     
     case $choice in
@@ -595,6 +1127,9 @@ manage_database() {
             ;;
         5)
             cleanup_database
+            ;;
+        6)
+            optimize_database
             ;;
         *)
             log_error "无效选择"
@@ -628,6 +1163,16 @@ try:
         count = cursor.fetchone()[0]
         print(f'  - {table[0]}: {count} 条记录')
     
+    # 获取数据库大小信息
+    cursor.execute('PRAGMA page_count')
+    page_count = cursor.fetchone()[0]
+    cursor.execute('PRAGMA page_size')
+    page_size = cursor.fetchone()[0]
+    
+    print(f'\\n页面数量: {page_count}')
+    print(f'页面大小: {page_size} bytes')
+    print(f'数据库大小: {(page_count * page_size) / 1024 / 1024:.2f} MB')
+    
     conn.close()
 except Exception as e:
     print(f'读取数据库失败: {e}')
@@ -644,7 +1189,13 @@ backup_database() {
     mkdir -p backup
     
     if cp vps_monitor.db "$backup_file"; then
-        log_info "数据库备份成功: $backup_file"
+        log_success "数据库备份成功: $backup_file"
+        
+        # 压缩备份文件
+        if command -v gzip >/dev/null 2>&1; then
+            gzip "$backup_file"
+            log_info "备份文件已压缩: ${backup_file}.gz"
+        fi
     else
         log_error "数据库备份失败"
     fi
@@ -739,6 +1290,42 @@ asyncio.run(cleanup())
     fi
 }
 
+# 数据库优化
+optimize_database() {
+    echo ""
+    echo "数据库优化"
+    echo "=========="
+    
+    if activate_venv; then
+        python3 -c "
+import sqlite3
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    print('正在优化数据库...')
+    
+    # 分析数据库
+    cursor.execute('ANALYZE')
+    print('✅ 数据库分析完成')
+    
+    # 清理碎片
+    cursor.execute('VACUUM')
+    print('✅ 数据库碎片清理完成')
+    
+    # 重建索引
+    cursor.execute('REINDEX')
+    print('✅ 索引重建完成')
+    
+    conn.close()
+    print('✅ 数据库优化完成')
+except Exception as e:
+    print(f'❌ 数据库优化失败: {e}')
+" 2>&1
+    fi
+}
+
 # 从旧版本迁移数据
 migrate_from_json() {
     echo "从JSON迁移到数据库"
@@ -812,7 +1399,9 @@ show_menu() {
         echo "4. 查看监控状态"
         echo "5. 查看监控日志"
         echo "6. 数据库管理"
-        echo "7. 从旧版本迁移数据"
+        echo "7. 数据统计分析         ${CYAN}[新功能]${NC}"
+        echo "8. 系统健康检查         ${CYAN}[新功能]${NC}"
+        echo "9. 从旧版本迁移数据"
         echo "0. 退出"
         echo "===================="
         
@@ -824,9 +1413,19 @@ show_menu() {
         else
             echo -e "监控状态: ${RED}未运行${NC}"
         fi
+        
+        # 显示统计信息
+        local monitor_count=$(get_monitor_count)
+        echo -e "监控商品: ${WHITE}$monitor_count${NC} 个"
+        
+        if [[ -f "vps_monitor.db" ]]; then
+            local db_size=$(du -h vps_monitor.db | cut -f1)
+            echo -e "数据库: ${WHITE}$db_size${NC}"
+        fi
+        
         echo "===================="
         
-        echo -n "请选择操作 (0-7): "
+        echo -n "请选择操作 (0-9): "
         read -r choice
         
         case $choice in
@@ -856,6 +1455,14 @@ show_menu() {
                 ;;
             7)
                 echo ""
+                show_statistics
+                ;;
+            8)
+                echo ""
+                health_check
+                ;;
+            9)
+                echo ""
                 migrate_from_json
                 ;;
             0)
@@ -881,6 +1488,9 @@ main() {
     if [[ ! -f "venv/bin/activate" ]] || [[ ! -f "config.json" ]]; then
         init_environment
     fi
+    
+    # 预缓存状态信息
+    cache_status
     
     # 显示主菜单
     show_menu
