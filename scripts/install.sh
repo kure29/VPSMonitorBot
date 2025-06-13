@@ -96,22 +96,62 @@ v2.0 新功能:
 EOF
 }
 
-# 检查系统类型
+# 检查系统类型 - 修复版本
 detect_os() {
     if [[ -f /etc/os-release ]]; then
-        OS=$(source /etc/os-release && echo $ID)
-        OS_VERSION=$(source /etc/os-release && echo $VERSION_ID)
+        # 使用grep而不是source来避免变量冲突
+        OS=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
     elif [[ -f /etc/redhat-release ]]; then
         OS="centos"
+        OS_VERSION=$(cat /etc/redhat-release | grep -oE '[0-9]+\.[0-9]+' | head -1)
     elif [[ -f /etc/debian_version ]]; then
         OS="debian"
+        OS_VERSION=$(cat /etc/debian_version)
     else
         OS="unknown"
+        OS_VERSION="unknown"
     fi
+    
+    # 处理一些特殊情况
+    case $OS in
+        "ubuntu")
+            ;;
+        "debian")
+            ;;
+        "centos"|"rhel")
+            ;;
+        "rocky"|"almalinux")
+            ;;
+        "arch")
+            ;;
+        *)
+            # 如果ID为空，尝试从PRETTY_NAME获取
+            if [[ -z "$OS" && -f /etc/os-release ]]; then
+                PRETTY_NAME=$(grep '^PRETTY_NAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+                case $PRETTY_NAME in
+                    *"Ubuntu"*)
+                        OS="ubuntu"
+                        ;;
+                    *"Debian"*)
+                        OS="debian"
+                        ;;
+                    *"CentOS"*)
+                        OS="centos"
+                        ;;
+                    *"Rocky"*)
+                        OS="rocky"
+                        ;;
+                    *)
+                        OS="unknown"
+                        ;;
+                esac
+            fi
+            ;;
+    esac
     
     log_debug "检测到操作系统: $OS $OS_VERSION"
 }
-
 # 检查Python版本
 check_python_version() {
     if command -v python3 >/dev/null 2>&1; then
