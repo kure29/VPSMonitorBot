@@ -1,5 +1,5 @@
 #!/bin/bash
-# VPS监控系统 v1.0 - 一键安装脚本
+# VPS监控系统 v2.0 - 一键安装脚本（数据库优化版）
 # 作者: kure29
 # 网站: https://kure29.com
 
@@ -15,7 +15,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 配置变量
-readonly VERSION="1.0.0"
+readonly VERSION="2.0.0"
 readonly AUTHOR="kure29"
 readonly WEBSITE="https://kure29.com"
 readonly GITHUB_REPO="https://github.com/kure29/VPSMonitorBot"
@@ -50,15 +50,22 @@ show_banner() {
    ╚═══╝  ╚═╝     ╚══════╝    ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝
 EOF
     echo -e "${NC}"
-    echo -e "${PURPLE}VPS库存监控系统 v${VERSION} 安装程序${NC}"
+    echo -e "${PURPLE}VPS库存监控系统 v${VERSION} 安装程序 - 数据库优化版${NC}"
     echo -e "${CYAN}作者: ${AUTHOR} | 网站: ${WEBSITE}${NC}"
+    echo ""
+    echo -e "${GREEN}🆕 v2.0 新功能：${NC}"
+    echo "• 📊 SQLite数据库存储，更稳定可靠"
+    echo "• 📈 详细统计分析功能"
+    echo "• 📄 分页显示监控列表"
+    echo "• 📤 数据导出和备份功能"
+    echo "• 🔄 从v1.0 JSON格式自动迁移"
     echo ""
 }
 
 # 显示帮助信息
 show_help() {
     cat << EOF
-VPS监控系统 v${VERSION} 安装脚本
+VPS监控系统 v${VERSION} 安装脚本 - 数据库优化版
 
 用法: $0 [选项]
 
@@ -69,47 +76,38 @@ VPS监控系统 v${VERSION} 安装脚本
     --mode <模式>       安装模式: local|docker|systemd (默认: local)
     --skip-deps         跳过系统依赖安装
     --no-download       不下载项目代码 (使用现有代码)
+    --migrate           从v1.0自动迁移数据
+    --init-db           只初始化数据库
+    --check-db          检查数据库状态
+
+v2.0 新功能:
+    --migrate           从JSON格式迁移到数据库
+    --init-db           初始化SQLite数据库
+    --check-db          检查数据库完整性
 
 示例:
     $0                              # 默认安装到当前目录
     $0 --dir /opt/vps-monitor       # 安装到指定目录
     $0 --mode docker                # 使用Docker模式安装
-    $0 --mode systemd               # 安装为系统服务
-    $0 --skip-deps                  # 跳过依赖安装
-    $0 --no-download                # 不下载代码，使用现有文件
+    $0 --migrate                    # 安装并迁移v1.0数据
+    $0 --init-db                    # 只初始化数据库
+    $0 --check-db                   # 检查数据库状态
 
 EOF
 }
 
-# 检查系统类型 - 使用更安全的方法
+# 检查系统类型
 detect_os() {
     if [[ -f /etc/os-release ]]; then
-        # 使用grep安全提取值，避免source导致的readonly变量问题
-        OS=$(grep -E "^ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
-        OS_VERSION=$(grep -E "^VERSION_ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        OS=$(source /etc/os-release && echo $ID)
+        OS_VERSION=$(source /etc/os-release && echo $VERSION_ID)
     elif [[ -f /etc/redhat-release ]]; then
         OS="centos"
-        OS_VERSION=""
     elif [[ -f /etc/debian_version ]]; then
         OS="debian"
-        OS_VERSION=$(cat /etc/debian_version)
     else
         OS="unknown"
-        OS_VERSION=""
     fi
-    
-    # 标准化OS名称
-    case "$OS" in
-        ubuntu|debian|raspbian)
-            OS="debian"
-            ;;
-        centos|rhel|fedora|rocky|alma)
-            OS="centos"
-            ;;
-        arch|manjaro)
-            OS="arch"
-            ;;
-    esac
     
     log_debug "检测到操作系统: $OS $OS_VERSION"
 }
@@ -119,7 +117,6 @@ check_python_version() {
     if command -v python3 >/dev/null 2>&1; then
         local python_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         
-        # 修复版本比较逻辑
         if python3 -c "import sys; exit(0 if sys.version_info >= (3, 7) else 1)"; then
             log_info "Python版本检查通过: $python_version"
             return 0
@@ -133,42 +130,47 @@ check_python_version() {
     fi
 }
 
+# 检查SQLite版本
+check_sqlite_version() {
+    if command -v sqlite3 >/dev/null 2>&1; then
+        local sqlite_version=$(sqlite3 --version | cut -d' ' -f1)
+        log_info "SQLite版本: $sqlite_version"
+        return 0
+    else
+        log_warn "未找到SQLite3，将在依赖安装阶段安装"
+        return 1
+    fi
+}
+
 # 安装系统依赖
 install_system_deps() {
-    log_info "安装系统依赖"
+    log_info "安装系统依赖（包含数据库支持）"
     
     case $OS in
-        debian)
+        ubuntu|debian)
             log_info "检测到Debian/Ubuntu系统"
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y
-            apt-get install -y python3 python3-pip python3-venv git curl jq wget
+            apt update
+            apt install -y python3 python3-pip python3-venv git curl jq wget sqlite3
             ;;
-        centos)
+        centos|rhel|rocky|alma)
             log_info "检测到CentOS/RHEL系统"
+            yum update -y
+            yum install -y python3 python3-pip git curl jq wget sqlite
             if command -v dnf >/dev/null 2>&1; then
-                dnf update -y
-                dnf install -y python3 python3-pip python3-venv git curl jq wget
+                dnf install -y python3-venv
             else
-                yum update -y
-                yum install -y python3 python3-pip git curl jq wget
-                # CentOS 7可能需要手动安装virtualenv
                 pip3 install virtualenv
             fi
             ;;
         arch)
             log_info "检测到Arch Linux系统"
             pacman -Syu --noconfirm
-            pacman -S --noconfirm python python-pip git curl jq wget
+            pacman -S --noconfirm python python-pip git curl jq wget sqlite
             ;;
         *)
             log_warn "未识别的系统类型: $OS"
-            log_info "请手动安装以下依赖: python3 python3-pip python3-venv git curl jq wget"
-            echo -n "是否继续? [y/N] "
-            read -r confirm
-            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-                exit 1
-            fi
+            log_info "请手动安装以下依赖: python3 python3-pip python3-venv git curl jq wget sqlite3"
             ;;
     esac
     
@@ -194,15 +196,12 @@ download_project() {
     fi
     
     log_info "从GitHub克隆项目..."
-    if git clone "$GITHUB_REPO" "$target_dir" 2>/dev/null; then
+    if git clone -b v${VERSION} "$GITHUB_REPO" "$target_dir" 2>/dev/null; then
         log_info "项目下载完成"
     else
         log_warn "Git克隆失败，尝试下载压缩包..."
         mkdir -p "$target_dir"
-        if curl -L "${GITHUB_REPO}/archive/main.zip" -o /tmp/vps-monitor.zip && \
-           unzip -q /tmp/vps-monitor.zip -d /tmp && \
-           mv /tmp/VPSMonitorBot-main/* "$target_dir/" && \
-           rm -rf /tmp/vps-monitor.zip /tmp/VPSMonitorBot-main; then
+        if curl -L "${GITHUB_REPO}/archive/v${VERSION}.tar.gz" | tar -xz -C "$target_dir" --strip-components=1; then
             log_info "压缩包下载完成"
         else
             log_error "下载失败，请检查网络连接或手动下载项目"
@@ -221,12 +220,7 @@ setup_python_env() {
     # 创建虚拟环境
     if [[ ! -d "venv" ]]; then
         log_info "创建Python虚拟环境..."
-        if command -v python3 >/dev/null 2>&1; then
-            python3 -m venv venv
-        else
-            log_error "Python3未安装"
-            return 1
-        fi
+        python3 -m venv venv
     fi
     
     # 激活虚拟环境
@@ -245,6 +239,208 @@ setup_python_env() {
         log_error "未找到requirements.txt文件"
         return 1
     fi
+    
+    # 检查关键依赖
+    log_info "验证关键依赖..."
+    python3 -c "
+import sqlite3
+import aiosqlite
+import telegram
+import cloudscraper
+print('✅ 所有关键依赖验证通过')
+" || {
+        log_error "关键依赖验证失败"
+        return 1
+    }
+}
+
+# 初始化数据库
+init_database() {
+    log_info "初始化SQLite数据库"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 激活虚拟环境
+    source venv/bin/activate
+    
+    # 检查数据库管理器是否存在
+    if [[ ! -f "database_manager.py" ]]; then
+        log_error "未找到database_manager.py文件"
+        return 1
+    fi
+    
+    # 初始化数据库
+    log_info "创建数据库表结构..."
+    python3 -c "
+import asyncio
+import sys
+from database_manager import DatabaseManager
+
+async def init_db():
+    try:
+        db = DatabaseManager('vps_monitor.db')
+        await db.initialize()
+        print('✅ 数据库初始化成功')
+        return True
+    except Exception as e:
+        print(f'❌ 数据库初始化失败: {e}')
+        return False
+
+result = asyncio.run(init_db())
+sys.exit(0 if result else 1)
+" || {
+        log_error "数据库初始化失败"
+        return 1
+    }
+    
+    # 检查数据库文件
+    if [[ -f "vps_monitor.db" ]]; then
+        local db_size=$(du -h vps_monitor.db | cut -f1)
+        log_info "数据库文件创建成功，大小: $db_size"
+    else
+        log_error "数据库文件创建失败"
+        return 1
+    fi
+}
+
+# 检查数据库状态
+check_database_status() {
+    log_info "检查数据库状态"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    if [[ ! -f "vps_monitor.db" ]]; then
+        log_warn "数据库文件不存在"
+        return 1
+    fi
+    
+    # 激活虚拟环境
+    source venv/bin/activate
+    
+    # 检查数据库结构
+    python3 -c "
+import sqlite3
+import asyncio
+from database_manager import DatabaseManager
+
+async def check_db():
+    try:
+        db = DatabaseManager('vps_monitor.db')
+        
+        # 检查表结构
+        async with aiosqlite.connect('vps_monitor.db') as conn:
+            cursor = await conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")
+            tables = await cursor.fetchall()
+            
+            print(f'📊 数据库表: {len(tables)} 个')
+            for table in tables:
+                cursor = await conn.execute(f'SELECT COUNT(*) FROM {table[0]}')
+                count = await cursor.fetchone()
+                print(f'  - {table[0]}: {count[0]} 条记录')
+        
+        print('✅ 数据库状态正常')
+        return True
+    except Exception as e:
+        print(f'❌ 数据库检查失败: {e}')
+        return False
+
+import aiosqlite
+result = asyncio.run(check_db())
+" || {
+        log_error "数据库状态检查失败"
+        return 1
+    }
+}
+
+# 从v1.0迁移数据
+migrate_from_v1() {
+    log_info "从v1.0 JSON格式迁移数据"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    if [[ ! -f "urls.json" ]]; then
+        log_warn "未找到urls.json文件，跳过迁移"
+        return 0
+    fi
+    
+    # 备份原文件
+    cp urls.json urls.json.backup.$(date +%Y%m%d_%H%M%S)
+    log_info "已备份原始urls.json文件"
+    
+    # 激活虚拟环境
+    source venv/bin/activate
+    
+    # 执行迁移
+    log_info "开始数据迁移..."
+    python3 -c "
+import json
+import asyncio
+import sys
+from database_manager import DatabaseManager
+
+async def migrate():
+    try:
+        # 读取旧数据
+        with open('urls.json', 'r', encoding='utf-8') as f:
+            old_data = json.load(f)
+        
+        print(f'📄 发现 {len(old_data)} 个监控项')
+        
+        # 初始化数据库
+        db = DatabaseManager('vps_monitor.db')
+        await db.initialize()
+        
+        # 迁移数据
+        migrated = 0
+        skipped = 0
+        
+        for item_id, item_data in old_data.items():
+            name = item_data.get('名称', f'商品{item_id}')
+            url = item_data.get('URL', '')
+            config = item_data.get('配置', '')
+            
+            if not url:
+                print(f'⏭️  跳过无效URL: {name}')
+                skipped += 1
+                continue
+            
+            # 检查是否已存在
+            existing = await db.get_monitor_item_by_url(url)
+            if existing:
+                print(f'⏭️  跳过已存在: {name}')
+                skipped += 1
+                continue
+            
+            # 添加到数据库
+            try:
+                await db.add_monitor_item(name, url, config)
+                print(f'✅ 已迁移: {name}')
+                migrated += 1
+            except Exception as e:
+                print(f'❌ 迁移失败 {name}: {e}')
+                skipped += 1
+        
+        print(f'\\n📊 迁移完成')
+        print(f'✅ 成功迁移: {migrated} 个')
+        print(f'⏭️  跳过项目: {skipped} 个')
+        
+        return migrated > 0
+    except Exception as e:
+        print(f'❌ 迁移失败: {e}')
+        return False
+
+result = asyncio.run(migrate())
+sys.exit(0 if result else 1)
+" && {
+        log_info "数据迁移成功"
+        return 0
+    } || {
+        log_error "数据迁移失败"
+        return 1
+    }
 }
 
 # 配置系统服务
@@ -256,20 +452,41 @@ setup_systemd_service() {
     
     cat > "$service_file" << EOF
 [Unit]
-Description=VPS Monitor v${VERSION}
-After=network.target
-Wants=network.target
+Description=VPS Monitor v${VERSION} - Database Edition
+Documentation=${WEBSITE}
+After=network.target network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=$USER
+User=root
 WorkingDirectory=$work_dir
 Environment=PATH=$work_dir/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=$work_dir
 ExecStart=$work_dir/venv/bin/python $work_dir/src/monitor.py
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+SyslogIdentifier=vps-monitor
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$work_dir
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryMax=512M
+CPUQuota=50%
 
 [Install]
 WantedBy=multi-user.target
@@ -297,9 +514,20 @@ setup_docker() {
     # 检查Docker是否安装
     if ! command -v docker >/dev/null 2>&1; then
         log_info "安装Docker..."
-        curl -fsSL https://get.docker.com | sh
-        systemctl start docker
-        systemctl enable docker
+        case $OS in
+            ubuntu|debian)
+                curl -fsSL https://get.docker.com | sh
+                ;;
+            centos|rhel|rocky|alma)
+                yum install -y docker
+                systemctl start docker
+                systemctl enable docker
+                ;;
+            *)
+                log_error "请手动安装Docker"
+                return 1
+                ;;
+        esac
     fi
     
     # 检查docker-compose是否安装
@@ -307,6 +535,66 @@ setup_docker() {
         log_info "安装docker-compose..."
         curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
         chmod +x /usr/local/bin/docker-compose
+    fi
+    
+    # 创建Docker配置
+    if [[ ! -f "Dockerfile" ]]; then
+        log_info "创建Dockerfile..."
+        cat > Dockerfile << 'EOF'
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y \
+    sqlite3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制requirements文件
+COPY requirements.txt .
+
+# 安装Python依赖
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 复制项目文件
+COPY . .
+
+# 创建数据目录
+RUN mkdir -p data logs backup
+
+# 暴露端口（如果需要）
+EXPOSE 8000
+
+# 启动命令
+CMD ["python", "src/monitor.py"]
+EOF
+    fi
+    
+    # 创建docker-compose文件
+    if [[ ! -f "docker-compose.yml" ]]; then
+        log_info "创建docker-compose.yml..."
+        cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  vps-monitor:
+    build: .
+    container_name: vps-monitor-v2
+    restart: unless-stopped
+    volumes:
+      - ./vps_monitor.db:/app/vps_monitor.db
+      - ./config.json:/app/config.json
+      - ./logs:/app/logs
+      - ./backup:/app/backup
+    environment:
+      - TZ=Asia/Shanghai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+EOF
     fi
     
     log_info "Docker环境配置完成"
@@ -332,12 +620,17 @@ generate_config() {
 {
     "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
     "chat_id": "YOUR_TELEGRAM_CHAT_ID",
+    "channel_id": "",
     "admin_ids": [],
     "check_interval": 180,
     "notification_aggregation_interval": 180,
     "notification_cooldown": 600,
     "request_timeout": 30,
-    "retry_delay": 60
+    "retry_delay": 60,
+    "items_per_page": 10,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "debug": false,
+    "log_level": "INFO"
 }
 EOF
             log_info "已创建默认配置文件"
@@ -357,16 +650,20 @@ setup_permissions() {
     cd "$work_dir"
     
     # 设置脚本执行权限
-    if [[ -d "scripts" ]]; then
-        find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-    fi
+    find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
     
     # 创建必要目录
-    mkdir -p data logs backup web/static
+    mkdir -p data logs backup export
     
-    # 如果存在主脚本，设置执行权限
-    [[ -f "menu.sh" ]] && chmod +x menu.sh
-    [[ -f "src/monitor.py" ]] && chmod +x src/monitor.py
+    # 设置数据库文件权限
+    if [[ -f "vps_monitor.db" ]]; then
+        chmod 644 vps_monitor.db
+    fi
+    
+    # 设置配置文件权限
+    if [[ -f "config.json" ]]; then
+        chmod 600 config.json
+    fi
     
     log_info "权限设置完成"
 }
@@ -378,51 +675,50 @@ verify_installation() {
     local work_dir="$1"
     cd "$work_dir"
     
-    local errors=0
-    
     # 检查必要文件
-    if [[ -f "src/monitor.py" ]] || [[ -f "monitor.py" ]]; then
-        log_debug "✓ 主程序文件存在"
-    else
-        log_error "✗ 主程序文件缺失"
-        ((errors++))
-    fi
-    
-    if [[ -f "requirements.txt" ]]; then
-        log_debug "✓ requirements.txt存在"
-    else
-        log_error "✗ requirements.txt缺失"
-        ((errors++))
-    fi
-    
-    if [[ -f "config.json" ]]; then
-        log_debug "✓ config.json存在"
-    else
-        log_error "✗ config.json缺失"
-        ((errors++))
-    fi
+    local required_files=("src/monitor.py" "database_manager.py" "requirements.txt" "config.json")
+    for file in "${required_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            log_debug "✓ $file"
+        else
+            log_error "✗ $file (缺失)"
+            return 1
+        fi
+    done
     
     # 检查Python环境
     if [[ -f "venv/bin/activate" ]]; then
         source venv/bin/activate
-        if python3 -c "import telegram, cloudscraper" 2>/dev/null; then
+        if python3 -c "
+import telegram
+import cloudscraper
+import aiosqlite
+from database_manager import DatabaseManager
+print('✅ Python依赖检查通过')
+" 2>/dev/null; then
             log_info "✓ Python依赖检查通过"
         else
             log_error "✗ Python依赖检查失败"
-            ((errors++))
+            return 1
         fi
     else
         log_error "✗ Python虚拟环境不存在"
-        ((errors++))
-    fi
-    
-    if [[ $errors -eq 0 ]]; then
-        log_info "安装验证通过"
-        return 0
-    else
-        log_error "安装验证失败，发现 $errors 个错误"
         return 1
     fi
+    
+    # 检查数据库
+    if [[ -f "vps_monitor.db" ]]; then
+        if check_database_status "$work_dir" >/dev/null 2>&1; then
+            log_info "✓ 数据库状态正常"
+        else
+            log_error "✗ 数据库状态异常"
+            return 1
+        fi
+    else
+        log_warn "? 数据库文件不存在（将在首次运行时创建）"
+    fi
+    
+    log_info "安装验证通过"
 }
 
 # 显示安装后说明
@@ -431,24 +727,24 @@ show_post_install_info() {
     local mode="$2"
     
     echo ""
-    log_info "安装完成！"
+    log_info "🎉 VPS监控系统 v${VERSION} 安装完成！"
     echo ""
     echo "📁 安装目录: $work_dir"
     echo "📄 配置文件: $work_dir/config.json"
+    echo "📊 数据库文件: $work_dir/vps_monitor.db"
     echo "📋 日志文件: $work_dir/monitor.log"
     echo ""
     
     case $mode in
         local)
             echo "🚀 启动方法:"
-            if [[ -f "$work_dir/menu.sh" ]]; then
-                echo "   cd $work_dir"
-                echo "   ./menu.sh"
-            else
-                echo "   cd $work_dir"
-                echo "   source venv/bin/activate"
-                echo "   python3 src/monitor.py"
-            fi
+            echo "   cd $work_dir"
+            echo "   ./scripts/menu.sh"
+            echo ""
+            echo "🔧 手动启动:"
+            echo "   cd $work_dir"
+            echo "   source venv/bin/activate"
+            echo "   python3 src/monitor.py"
             ;;
         systemd)
             echo "🚀 服务管理:"
@@ -467,11 +763,27 @@ show_post_install_info() {
     esac
     
     echo ""
+    echo "🆕 v2.0 新功能:"
+    echo "• 📊 SQLite数据库存储，支持历史数据分析"
+    echo "• 📈 详细的统计信息和趋势分析"
+    echo "• 📄 分页显示监控列表，支持大量商品"
+    echo "• 📤 数据导出和备份功能"
+    echo "• 🔄 从v1.0 JSON格式自动迁移"
+    echo ""
     echo "📝 下一步:"
     echo "1. 编辑配置文件设置Telegram信息"
     echo "   nano $work_dir/config.json"
     echo "2. 启动监控程序"
-    echo "3. 使用Telegram Bot添加监控商品"
+    if [[ -f "$work_dir/urls.json" ]]; then
+        echo "3. 🔄 运行数据迁移（检测到v1.0数据）"
+        echo "   cd $work_dir && python3 -c \"import asyncio; from database_manager import *; ...\""
+    fi
+    echo "4. 使用Telegram Bot添加监控商品"
+    echo ""
+    echo "💾 数据库管理:"
+    echo "• 数据库文件: vps_monitor.db"
+    echo "• 备份命令: cp vps_monitor.db backup/vps_monitor_backup_\$(date +%Y%m%d).db"
+    echo "• 查看数据: sqlite3 vps_monitor.db '.tables'"
     echo ""
     echo "❓ 获取帮助:"
     echo "   作者: $AUTHOR"
@@ -484,6 +796,9 @@ main_install() {
     local install_mode="local"
     local skip_deps=false
     local no_download=false
+    local migrate_data=false
+    local init_db_only=false
+    local check_db_only=false
     local target_dir="$INSTALL_DIR"
     
     # 解析参数
@@ -494,7 +809,7 @@ main_install() {
                 exit 0
                 ;;
             -v|--version)
-                echo "VPS监控系统 v${VERSION}"
+                echo "VPS监控系统 v${VERSION} - 数据库优化版"
                 exit 0
                 ;;
             --dir)
@@ -513,6 +828,18 @@ main_install() {
                 no_download=true
                 shift
                 ;;
+            --migrate)
+                migrate_data=true
+                shift
+                ;;
+            --init-db)
+                init_db_only=true
+                shift
+                ;;
+            --check-db)
+                check_db_only=true
+                shift
+                ;;
             *)
                 log_error "未知参数: $1"
                 show_help
@@ -523,10 +850,26 @@ main_install() {
     
     show_banner
     
-    log_info "开始安装 VPS监控系统 v${VERSION}"
+    # 只检查数据库
+    if [[ "$check_db_only" == true ]]; then
+        log_info "检查数据库状态模式"
+        check_database_status "$target_dir"
+        exit $?
+    fi
+    
+    # 只初始化数据库
+    if [[ "$init_db_only" == true ]]; then
+        log_info "仅初始化数据库模式"
+        cd "$target_dir"
+        init_database "$target_dir"
+        exit $?
+    fi
+    
+    log_info "开始安装 VPS监控系统 v${VERSION} - 数据库优化版"
     log_info "安装模式: $install_mode"
     
     # 检测系统
+    echo ""
     echo "=== 检查系统要求 ==="
     detect_os
     
@@ -539,6 +882,7 @@ main_install() {
         fi
     fi
     
+    check_sqlite_version
     log_info "系统要求检查完成"
     
     # 安装系统依赖
@@ -568,6 +912,18 @@ main_install() {
     echo "=== 设置Python环境 ==="
     setup_python_env "$target_dir"
     
+    # 初始化数据库
+    echo ""
+    echo "=== 初始化数据库 ==="
+    init_database "$target_dir"
+    
+    # 数据迁移（如果需要）
+    if [[ "$migrate_data" == true ]] || [[ -f "$target_dir/urls.json" ]]; then
+        echo ""
+        echo "=== 数据迁移 ==="
+        migrate_from_v1 "$target_dir"
+    fi
+    
     # 生成配置文件
     echo ""
     echo "=== 生成配置文件 ==="
@@ -583,10 +939,6 @@ main_install() {
         systemd)
             echo ""
             echo "=== 配置系统服务 ==="
-            if [[ $EUID -ne 0 ]]; then
-                log_error "系统服务模式需要root权限"
-                exit 1
-            fi
             setup_systemd_service "$target_dir"
             ;;
         docker)
@@ -626,7 +978,7 @@ trap 'error_handler $LINENO' ERR
 # 主函数
 main() {
     # 检查运行权限
-    if [[ "$1" == "--mode" && "$2" == "systemd" ]] && [[ $EUID -ne 0 ]]; then
+    if [[ $EUID -ne 0 ]] && [[ "$1" == "--mode" && "$2" == "systemd" ]]; then
         log_error "系统服务模式需要root权限，请使用sudo运行"
         exit 1
     fi
