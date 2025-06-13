@@ -122,19 +122,20 @@ VPS监控系统 v${VERSION} 安装脚本 - 数据库优化版
     --check-db          检查数据库状态
     --force             强制覆盖现有安装
     --auto-yes          自动确认所有提示 (用于自动化安装)
+    --configure         交互式配置Telegram信息
 
 v2.0 新功能:
     --migrate           从JSON格式迁移到数据库
     --init-db           初始化SQLite数据库
     --check-db          检查数据库完整性
+    --configure         配置Telegram Bot信息
 
 示例:
     $0                              # 默认安装到当前目录
     $0 --dir /opt/vps-monitor       # 安装到指定目录
     $0 --mode docker                # 使用Docker模式安装
     $0 --migrate                    # 安装并迁移v1.0数据
-    $0 --init-db                    # 只初始化数据库
-    $0 --check-db                   # 检查数据库状态
+    $0 --configure                  # 安装并配置Telegram信息
     $0 --force --auto-yes           # 强制安装，自动确认
 
 EOF
@@ -320,12 +321,32 @@ download_project() {
     fi
 }
 
+
+
 # 设置Python环境
 setup_python_env() {
     log_info "设置Python环境"
     
     local work_dir="$1"
     cd "$work_dir"
+    
+    # 删除现有虚拟环境（如果存在且有问题）
+    if [[ -d "venv" ]]; then
+        log_info "发现现有虚拟环境，正在验证..."
+        if ! source venv/bin/activate 2>/dev/null; then
+            log_warn "虚拟环境损坏，重新创建..."
+            rm -rf venv
+        else
+            # 检查关键依赖是否存在
+            if ! python3 -c "import aiosqlite" 2>/dev/null; then
+                log_warn "关键依赖缺失，重新创建虚拟环境..."
+                rm -rf venv
+            else
+                log_info "虚拟环境正常，跳过创建"
+                return 0
+            fi
+        fi
+    fi
     
     # 创建虚拟环境
     if [[ ! -d "venv" ]]; then
@@ -344,24 +365,134 @@ setup_python_env() {
     if [[ -f "requirements.txt" ]]; then
         log_info "安装Python依赖..."
         pip install -r requirements.txt
+        
+        # 手动确保关键依赖安装成功
+        log_info "确保关键依赖安装..."
+        pip install aiosqlite python-telegram-bot cloudscraper requests aiohttp
+        
         log_info "依赖安装完成"
     else
         log_error "未找到requirements.txt文件"
         return 1
     fi
     
-    # 检查关键依赖
+    # 验证关键依赖
     log_info "验证关键依赖..."
     python3 -c "
-import sqlite3
-import aiosqlite
-import telegram
-import cloudscraper
-print('✅ 所有关键依赖验证通过')
+import sys
+missing_deps = []
+
+try:
+    import aiosqlite
+    print('✅ aiosqlite')
+except ImportError:
+    missing_deps.append('aiosqlite')
+    print('❌ aiosqlite')
+
+try:
+    import telegram
+    print('✅ python-telegram-bot')
+except ImportError:
+    missing_deps.append('python-telegram-bot')
+    print('❌ python-telegram-bot')
+
+try:
+    import cloudscraper
+    print('✅ cloudscraper')
+except ImportError:
+    missing_deps.append('cloudscraper')
+    print('❌ cloudscraper')
+
+try:
+    import sqlite3
+    print('✅ sqlite3 (内置)')
+except ImportError:
+    missing_deps.append('sqlite3')
+    print('❌ sqlite3')
+
+if missing_deps:
+    print(f'\\n❌ 缺少依赖: {missing_deps}')
+    sys.exit(1)
+else:
+    print('\\n✅ 所有关键依赖验证通过')
 " || {
-        log_error "关键依赖验证失败"
-        return 1
+        log_error "关键依赖验证失败，尝试手动安装..."
+        pip install --force-reinstall aiosqlite python-telegram-bot cloudscraper
+        
+        # 再次验证
+        python3 -c "import aiosqlite, telegram, cloudscraper; print('✅ 手动安装成功')" || {
+            log_error "手动安装也失败了，请检查系统环境"
+            return 1
+        }
     }
+}
+
+# 测试数据库功能
+test_database_functionality() {
+    log_info "测试数据库功能"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 激活虚拟环境
+    source venv/bin/activate
+    
+    # 测试数据库操作
+    python3 -c "
+import asyncio
+import aiosqlite
+import sqlite3
+import os
+
+async def test_database():
+    try:
+        # 测试异步数据库操作
+        async with aiosqlite.connect('test_install_db.db') as db:
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS test_table (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            await db.execute('INSERT INTO test_table (name) VALUES (?)', ('test_install',))
+            await db.commit()
+            
+            cursor = await db.execute('SELECT COUNT(*) FROM test_table')
+            count = await cursor.fetchone()
+            print(f'✅ 异步数据库测试成功，插入了 {count[0]} 条记录')
+        
+        # 测试同步数据库操作
+        conn = sqlite3.connect('test_install_db.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT name FROM test_table WHERE name = ?', ('test_install',))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            print('✅ 同步数据库测试成功')
+        else:
+            print('❌ 同步数据库测试失败')
+            return False
+        
+        # 清理测试文件
+        if os.path.exists('test_install_db.db'):
+            os.remove('test_install_db.db')
+            print('✅ 测试文件已清理')
+            
+        return True
+    except Exception as e:
+        print(f'❌ 数据库测试失败: {e}')
+        return False
+
+result = asyncio.run(test_database())
+exit(0 if result else 1)
+" || {
+    log_error "数据库功能测试失败"
+    return 1
+}
+
+log_info "✅ 数据库功能测试通过"
 }
 
 # 初始化数据库
@@ -440,6 +571,7 @@ async def check_db():
         db = DatabaseManager('vps_monitor.db')
         
         # 检查表结构
+        import aiosqlite
         async with aiosqlite.connect('vps_monitor.db') as conn:
             cursor = await conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")
             tables = await cursor.fetchall()
@@ -456,7 +588,6 @@ async def check_db():
         print(f'❌ 数据库检查失败: {e}')
         return False
 
-import aiosqlite
 result = asyncio.run(check_db())
 " || {
         log_error "数据库状态检查失败"
@@ -549,6 +680,162 @@ sys.exit(0 if result else 1)
         return 0
     } || {
         log_error "数据迁移失败"
+        return 1
+    }
+}
+
+# 交互式配置Telegram信息
+configure_telegram() {
+    log_info "配置Telegram信息"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    echo ""
+    echo "============================================"
+    echo "           配置Telegram机器人信息"
+    echo "============================================"
+    echo ""
+    
+    echo "获取Bot Token的步骤："
+    echo "1. 在Telegram中搜索 @BotFather"
+    echo "2. 发送 /newbot 命令"
+    echo "3. 按提示创建机器人并获取Token"
+    echo ""
+    
+    echo -n "请输入Bot Token: "
+    read -r bot_token
+    
+    if [[ -z "$bot_token" ]]; then
+        log_error "Bot Token不能为空"
+        return 1
+    fi
+    
+    echo ""
+    echo "获取Chat ID的步骤："
+    echo "1. 在Telegram中搜索 @userinfobot"
+    echo "2. 发送 /start 命令"
+    echo "3. 复制返回的数字ID"
+    echo ""
+    
+    echo -n "请输入Chat ID: "
+    read -r chat_id
+    
+    if [[ -z "$chat_id" ]]; then
+        log_error "Chat ID不能为空"
+        return 1
+    fi
+    
+    # 可选配置
+    echo ""
+    echo "可选配置（留空使用默认值）："
+    echo -n "频道ID（用于发送通知，留空则发送到私聊）: "
+    read -r channel_id
+    
+    echo -n "管理员ID（多个ID用逗号分隔，留空则所有人可管理）: "
+    read -r admin_ids
+    
+    echo -n "检查间隔（秒，默认180）: "
+    read -r check_interval
+    check_interval=${check_interval:-180}
+    
+    # 创建配置文件
+    cat > config.json << EOF
+{
+    "bot_token": "$bot_token",
+    "chat_id": "$chat_id",
+    "channel_id": "$channel_id",
+    "admin_ids": [$(echo "$admin_ids" | sed 's/,/", "/g' | sed 's/.*/\"&\"/' | sed 's/\"\"//g')],
+    "check_interval": $check_interval,
+    "notification_aggregation_interval": 180,
+    "notification_cooldown": 600,
+    "request_timeout": 30,
+    "retry_delay": 60,
+    "items_per_page": 10,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "debug": false,
+    "log_level": "INFO"
+}
+EOF
+    
+    log_info "配置文件已保存到 config.json"
+    
+    # 测试配置
+    echo ""
+    echo -n "是否测试Telegram连接? (y/N): "
+    read -r test_conn
+    
+    if [[ "$test_conn" == "y" || "$test_conn" == "Y" ]]; then
+        test_telegram_connection "$work_dir"
+    fi
+}
+
+# 测试Telegram连接
+test_telegram_connection() {
+    log_info "测试Telegram连接..."
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 激活虚拟环境
+    source venv/bin/activate
+    
+    python3 -c "
+import requests
+import json
+import sys
+
+try:
+    config = json.load(open('config.json'))
+    
+    print('🔍 测试Bot Token...')
+    resp = requests.get(f'https://api.telegram.org/bot{config[\"bot_token\"]}/getMe', timeout=10)
+    
+    if resp.json().get('ok'):
+        bot_info = resp.json()['result']
+        print(f'✅ Bot连接成功: @{bot_info[\"username\"]}')
+        
+        print('🔍 测试发送消息...')
+        # 发送测试消息
+        test_resp = requests.post(
+            f'https://api.telegram.org/bot{config[\"bot_token\"]}/sendMessage', 
+            json={
+                'chat_id': config['chat_id'], 
+                'text': '🤖 VPS监控系统 v2.0 安装完成！\\n\\n这是一条测试消息，说明配置正确。\\n\\n请使用 /help 命令查看可用功能。'
+            }, 
+            timeout=10
+        )
+        
+        if test_resp.json().get('ok'):
+            print('✅ 测试消息发送成功')
+            print('📱 请检查您的Telegram是否收到测试消息')
+            return True
+        else:
+            error_msg = test_resp.json().get('description', '未知错误')
+            print(f'❌ 测试消息发送失败: {error_msg}')
+            print('💡 请检查Chat ID是否正确')
+            return False
+    else:
+        error_msg = resp.json().get('description', '未知错误')
+        print(f'❌ Bot连接失败: {error_msg}')
+        print('💡 请检查Bot Token是否正确')
+        return False
+        
+except requests.exceptions.RequestException as e:
+    print(f'❌ 网络请求失败: {e}')
+    return False
+except json.JSONDecodeError as e:
+    print(f'❌ 配置文件格式错误: {e}')
+    return False
+except Exception as e:
+    print(f'❌ 测试失败: {e}')
+    return False
+    
+" && {
+        log_info "Telegram连接测试通过"
+        return 0
+    } || {
+        log_warn "Telegram连接测试失败，请检查配置"
         return 1
     }
 }
@@ -835,6 +1122,7 @@ print('✅ Python依赖检查通过')
 show_post_install_info() {
     local work_dir="$1"
     local mode="$2"
+    local configured="$3"
     
     echo ""
     log_info "🎉 VPS监控系统 v${VERSION} 安装完成！"
@@ -880,15 +1168,27 @@ show_post_install_info() {
     echo "• 📤 数据导出和备份功能"
     echo "• 🔄 从v1.0 JSON格式自动迁移"
     echo ""
-    echo "📝 下一步:"
-    echo "1. 编辑配置文件设置Telegram信息"
-    echo "   nano $work_dir/config.json"
-    echo "2. 启动监控程序"
-    if [[ -f "$work_dir/urls.json" ]]; then
-        echo "3. 🔄 运行数据迁移（检测到v1.0数据）"
-        echo "   cd $work_dir && python3 -c \"import asyncio; from database_manager import *; ...\""
+    
+    if [[ "$configured" == "true" ]]; then
+        echo "✅ Telegram已配置完成，可以直接启动使用"
+        echo ""
+        echo "📝 快速启动:"
+        echo "1. 运行管理菜单: ./scripts/menu.sh"
+        echo "2. 选择 '2. 启动监控'"
+        echo "3. 使用Telegram Bot添加监控商品"
+    else
+        echo "📝 下一步:"
+        echo "1. 配置Telegram信息:"
+        echo "   cd $work_dir"
+        echo "   ./scripts/menu.sh  # 选择 '1. 配置Telegram信息'"
+        echo "   # 或者手动编辑: nano config.json"
+        echo "2. 启动监控程序"
+        if [[ -f "$work_dir/urls.json" ]]; then
+            echo "3. 🔄 运行数据迁移（检测到v1.0数据）"
+        fi
+        echo "4. 使用Telegram Bot添加监控商品"
     fi
-    echo "4. 使用Telegram Bot添加监控商品"
+    
     echo ""
     echo "💾 数据库管理:"
     echo "• 数据库文件: vps_monitor.db"
@@ -911,6 +1211,7 @@ main_install() {
     local check_db_only=false
     local force_download=false
     local auto_yes=false
+    local configure_tg=false
     local target_dir="$INSTALL_DIR"
     
     # 解析参数
@@ -958,6 +1259,10 @@ main_install() {
                 ;;
             --auto-yes)
                 auto_yes=true
+                shift
+                ;;
+            --configure)
+                configure_tg=true
                 shift
                 ;;
             *)
@@ -1032,6 +1337,11 @@ main_install() {
     echo "=== 设置Python环境 ==="
     setup_python_env "$target_dir"
     
+    # 测试数据库功能
+    echo ""
+    echo "=== 测试数据库功能 ==="
+    test_database_functionality "$target_dir"
+    
     # 初始化数据库
     echo ""
     echo "=== 初始化数据库 ==="
@@ -1048,6 +1358,16 @@ main_install() {
     echo ""
     echo "=== 生成配置文件 ==="
     generate_config "$target_dir"
+    
+    # 配置Telegram（如果需要）
+    local tg_configured=false
+    if [[ "$configure_tg" == true ]] && [[ "$auto_yes" == false ]]; then
+        echo ""
+        echo "=== 配置Telegram信息 ==="
+        if configure_telegram "$target_dir"; then
+            tg_configured=true
+        fi
+    fi
     
     # 设置权限
     echo ""
@@ -1081,7 +1401,7 @@ main_install() {
     verify_installation "$target_dir"
     
     # 显示安装后信息
-    show_post_install_info "$target_dir" "$install_mode"
+    show_post_install_info "$target_dir" "$install_mode" "$tg_configured"
 }
 
 # 错误处理
