@@ -13,6 +13,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any
+from urllib.parse import urlparse
 from config import Config
 from database_manager import DatabaseManager, User, MonitorItem
 from utils import is_valid_url, calculate_success_rate, escape_markdown
@@ -109,7 +110,7 @@ class TelegramBot:
             "📱 **基础功能:**\n"
             "• `/start` - 显示主菜单\n"
             "• `/list` - 查看您的监控列表\n"
-            "• `/add <URL>` - 添加监控项目\n"
+            "• `/add <URL> [名称]` - 添加监控项目\n"
             "• `/help` - 显示此帮助信息\n\n"
             
             "🔍 **调试功能:**\n"
@@ -381,7 +382,7 @@ class TelegramBot:
     # ===== 核心功能实现 =====
     
     async def _add_monitor_item(self, message, user_id: str, url: str, name: str = "") -> None:
-        """添加监控项目"""
+        """添加监控项目 - 增强版"""
         # 验证URL
         is_valid, error_msg = is_valid_url(url)
         if not is_valid:
@@ -407,6 +408,7 @@ class TelegramBot:
             # 如果没有提供名称，尝试获取页面标题
             if not name:
                 try:
+                    await adding_msg.edit_text("⏳ 正在获取页面信息...")
                     smart_monitor = SmartComboMonitor(self.config)
                     loop = asyncio.get_event_loop()
                     response = await loop.run_in_executor(
@@ -415,16 +417,28 @@ class TelegramBot:
                     )
                     
                     if response and response.status_code == 200:
+                        # 尝试多种方式获取标题
                         title_match = re.search(r'<title[^>]*>(.*?)</title>', response.text, re.IGNORECASE | re.DOTALL)
                         if title_match:
-                            name = title_match.group(1).strip()[:50]
+                            raw_title = title_match.group(1).strip()
+                            # 清理标题中的特殊字符和多余空格
+                            name = re.sub(r'\s+', ' ', raw_title)
+                            name = name[:50]  # 限制长度
+                        
+                        # 如果标题为空或太短，尝试获取h1标签
+                        if not name or len(name) < 3:
+                            h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', response.text, re.IGNORECASE | re.DOTALL)
+                            if h1_match:
+                                name = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()[:50]
                     
                     smart_monitor.close()
-                except:
-                    pass
+                except Exception as e:
+                    self.logger.warning(f"获取页面标题失败: {e}")
                 
+                # 如果仍然没有名称，使用更友好的默认名称
                 if not name:
-                    name = f"监控项目 {datetime.now().strftime('%m-%d %H:%M')}"
+                    domain = urlparse(url).netloc
+                    name = f"{domain} - {datetime.now().strftime('%m月%d日 %H:%M')}"
             
             # 添加到数据库
             item_id, success = await self.db_manager.add_monitor_item(
@@ -440,10 +454,13 @@ class TelegramBot:
                 await adding_msg.edit_text(
                     f"✅ **监控添加成功**\n\n"
                     f"📝 名称: {name}\n"
-                    f"🔗 URL: {url}\n"
+                    f"🔗 URL: `{url}`\n"
                     f"🆔 ID: {item_id}\n\n"
                     f"🔍 系统将在下次检查周期中开始监控此项目\n"
-                    f"📱 库存变化时会推送通知给管理员"
+                    f"📱 库存变化时会推送通知给管理员\n\n"
+                    f"💡 **提示：**\n"
+                    f"如需修改名称，请先删除后重新添加",
+                    parse_mode='Markdown'
                 )
                 
                 # 通知管理员
@@ -590,7 +607,7 @@ class TelegramBot:
             )
     
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """处理回调查询"""
+        """处理回调查询 - 修复版"""
         query = update.callback_query
         await query.answer()  # 立即应答，避免超时
         
@@ -614,7 +631,11 @@ class TelegramBot:
                     "或者直接发送URL，系统会自动提取页面标题作为名称\n\n"
                     "例如:\n"
                     "`/add https://example.com/vps 测试VPS`\n"
-                    "`https://example.com/product`",
+                    "`https://example.com/product`\n\n"
+                    "💡 **提示：**\n"
+                    "• 名称支持中文和空格\n"
+                    "• 如果不指定名称，将尝试获取页面标题\n"
+                    "• 获取失败时使用时间作为默认名称",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')
@@ -632,8 +653,52 @@ class TelegramBot:
                 await self._show_user_statistics(query.message, user_info.id)
             
             elif data == 'help':
-                await query.edit_message_text("📖 正在加载帮助信息...")
-                await self._help_command(update, context)
+                # 修复：直接显示帮助信息，而不是调用 _help_command
+                help_text = (
+                    "🤖 **VPS监控机器人 v3.1 帮助**\n\n"
+                    
+                    "📱 **基础功能:**\n"
+                    "• `/start` - 显示主菜单\n"
+                    "• `/list` - 查看您的监控列表\n"
+                    "• `/add <URL> [名称]` - 添加监控项目\n"
+                    "• `/help` - 显示此帮助信息\n\n"
+                    
+                    "🔍 **调试功能:**\n"
+                    "• `/debug <URL>` - 调试分析单个URL\n\n"
+                    
+                    "🚀 **v3.1 新特性:**\n"
+                    "• 🧠 智能组合监控算法\n"
+                    "• 🎯 多重检测方法验证\n"
+                    "• 📊 置信度评分系统\n"
+                    "• 👥 多用户支持\n"
+                    "• 🛡️ 主流VPS商家适配\n"
+                    "• 🧩 完整的管理员工具\n"
+                    "• 🔧 集成调试功能\n\n"
+                    
+                    "💡 **使用提示:**\n"
+                    "• 支持主流VPS商家自动优化\n"
+                    "• 智能检测算法自动选择最佳方法\n"
+                    "• 所有用户都可以添加监控\n"
+                    "• 库存变化会推送给管理员\n"
+                    "• 每日添加限制：50个商品\n\n"
+                    
+                    "👨‍💻 **开发者信息:**\n"
+                    "作者: kure29\n"
+                    "网站: https://kure29.com"
+                )
+                
+                if self._check_admin_permission(str(update.effective_user.id)):
+                    help_text += (
+                        "\n\n🧩 **管理员专用:**\n"
+                        "• `/admin` - 管理员控制面板\n"
+                        "• 全局监控管理\n"
+                        "• 用户行为统计\n"
+                        "• 系统配置管理\n"
+                        "• 调试工具集成"
+                    )
+                
+                keyboard = [[InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]]
+                await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
             
             elif data == 'admin_panel':
                 if self._check_admin_permission(user_info.id):
@@ -705,9 +770,26 @@ class TelegramBot:
                 else:
                     await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
+            # 添加用户详情处理
+            elif data.startswith('user_detail_'):
+                if self._check_admin_permission(user_info.id):
+                    user_id = data.replace('user_detail_', '')
+                    await self._show_user_detail(query, user_id, edit_message=True)
+                else:
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
+            
+            # 添加用户操作处理
+            elif data.startswith('toggle_ban_'):
+                if self._check_admin_permission(user_info.id):
+                    target_user_id = data.replace('toggle_ban_', '')
+                    await self._toggle_user_ban(query, target_user_id)
+                else:
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
+            
+            # 导出日志处理
             elif data == 'admin_export_logs':
                 if self._check_admin_permission(user_info.id):
-                    await query.answer("日志导出功能开发中...", show_alert=True)
+                    await self._export_logs(query)
                 else:
                     await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
@@ -731,7 +813,7 @@ class TelegramBot:
     # ===== 管理员功能实现 =====
     
     async def _show_admin_users(self, query, page: int = 0, edit_message: bool = True) -> None:
-        """显示用户管理界面"""
+        """显示用户管理界面 - 增强版"""
         try:
             users = await self.db_manager.get_all_users(include_banned=True)
             
@@ -739,27 +821,37 @@ class TelegramBot:
                 text = "👥 **用户管理**\n\n❌ 暂无用户"
                 keyboard = [[InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]]
             else:
-                total_pages = (len(users) + 10 - 1) // 10
-                start_idx = page * 10
-                end_idx = start_idx + 10
+                total_pages = (len(users) + 5 - 1) // 5  # 每页5个用户，方便点击
+                start_idx = page * 5
+                end_idx = start_idx + 5
                 page_users = users[start_idx:end_idx]
                 
                 text = f"👥 **用户管理** (第 {page + 1}/{total_pages} 页)\n\n"
                 
+                keyboard = []
+                
                 for user in page_users:
                     status = "🚫" if user.is_banned else ("👑" if user.is_admin else "👤")
                     display_name = user.username or user.first_name or f"用户{user.id}"
-                    text += f"{status} {display_name}\n"
-                    text += f"   ID: `{user.id}` | 监控: {user.total_monitors}\n"
-                
-                keyboard = []
+                    
+                    text += f"{status} **{display_name}**\n"
+                    text += f"   ID: `{user.id}` | 监控: {user.total_monitors} | 通知: {user.total_notifications}\n\n"
+                    
+                    # 为每个用户添加可点击的按钮
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            f"{status} {display_name[:20]}", 
+                            callback_data=f'user_detail_{user.id}'
+                        )
+                    ])
                 
                 # 分页按钮
                 nav_buttons = []
                 if page > 0:
-                    nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f'admin_users_page_{page-1}'))
+                    nav_buttons.append(InlineKeyboardButton("⬅️ 上页", callback_data=f'admin_users_page_{page-1}'))
+                nav_buttons.append(InlineKeyboardButton("🔄 刷新", callback_data=f'admin_users_page_{page}'))
                 if page < total_pages - 1:
-                    nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f'admin_users_page_{page+1}'))
+                    nav_buttons.append(InlineKeyboardButton("➡️ 下页", callback_data=f'admin_users_page_{page+1}'))
                 
                 if nav_buttons:
                     keyboard.append(nav_buttons)
@@ -776,6 +868,93 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"显示用户管理界面失败: {e}")
             await query.answer("加载用户列表失败，请稍后重试", show_alert=True)
+    
+    async def _show_user_detail(self, query, user_id: str, edit_message: bool = True) -> None:
+        """显示用户详情"""
+        try:
+            user = await self.db_manager.get_user(user_id)
+            if not user:
+                await query.answer("用户不存在", show_alert=True)
+                return
+            
+            # 获取用户的监控项目
+            user_items = await self.db_manager.get_monitor_items(user_id=user_id, include_global=False)
+            
+            status = "🚫 已封禁" if user.is_banned else ("👑 管理员" if user.is_admin else "👤 普通用户")
+            
+            text = (
+                f"👤 **用户详情**\n\n"
+                f"**基本信息：**\n"
+                f"• ID: `{user.id}`\n"
+                f"• 用户名: {user.username or '未设置'}\n"
+                f"• 姓名: {user.first_name} {user.last_name or ''}\n"
+                f"• 状态: {status}\n"
+                f"• 注册时间: {user.created_at.split('T')[0] if user.created_at else '未知'}\n\n"
+                
+                f"**统计信息：**\n"
+                f"• 监控项目: {user.total_monitors} 个\n"
+                f"• 通知次数: {user.total_notifications} 次\n"
+                f"• 今日添加: {user.daily_add_count} 个\n"
+                f"• 最后添加: {user.last_add_date or '从未'}\n\n"
+                
+                f"**监控项目：**\n"
+            )
+            
+            if user_items:
+                for i, (item_id, item) in enumerate(list(user_items.items())[:5], 1):
+                    text += f"{i}. {item.name[:30]}{'...' if len(item.name) > 30 else ''}\n"
+                if len(user_items) > 5:
+                    text += f"... 还有 {len(user_items) - 5} 个项目\n"
+            else:
+                text += "暂无监控项目\n"
+            
+            keyboard = []
+            
+            # 操作按钮
+            if user.is_banned:
+                keyboard.append([InlineKeyboardButton("✅ 解封用户", callback_data=f'toggle_ban_{user_id}')])
+            else:
+                keyboard.append([InlineKeyboardButton("🚫 封禁用户", callback_data=f'toggle_ban_{user_id}')])
+            
+            keyboard.extend([
+                [InlineKeyboardButton("📊 查看监控项目", callback_data=f'list_items_{user_id}_0')],
+                [InlineKeyboardButton("🔙 返回用户列表", callback_data='admin_users')]
+            ])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+        except Exception as e:
+            self.logger.error(f"显示用户详情失败: {e}")
+            await query.answer("加载用户详情失败", show_alert=True)
+    
+    async def _toggle_user_ban(self, query, user_id: str) -> None:
+        """切换用户封禁状态"""
+        try:
+            user = await self.db_manager.get_user(user_id)
+            if not user:
+                await query.answer("用户不存在", show_alert=True)
+                return
+            
+            # 切换封禁状态
+            new_status = not user.is_banned
+            success = await self.db_manager.update_user_ban_status(user_id, new_status)
+            
+            if success:
+                action = "封禁" if new_status else "解封"
+                await query.answer(f"已{action}用户 {user.username or user.first_name}", show_alert=True)
+                # 刷新用户详情页面
+                await self._show_user_detail(query, user_id, edit_message=True)
+            else:
+                await query.answer("操作失败，请重试", show_alert=True)
+                
+        except Exception as e:
+            self.logger.error(f"切换用户封禁状态失败: {e}")
+            await query.answer("操作失败", show_alert=True)
     
     async def _show_admin_monitors(self, query, page: int = 0, edit_message: bool = True) -> None:
         """显示全局监控管理"""
@@ -1023,6 +1202,92 @@ class TelegramBot:
             await query.edit_message_text(text, reply_markup=reply_markup)
         else:
             await query.reply_text(text, reply_markup=reply_markup)
+    
+    async def _export_logs(self, query) -> None:
+        """导出日志文件"""
+        try:
+            await query.edit_message_text("📋 正在导出日志...")
+            
+            # 查找日志文件
+            log_files = []
+            log_dir = Path("logs")
+            
+            if log_dir.exists():
+                log_files = list(log_dir.glob("*.log"))
+            
+            # 如果当前目录也有日志文件
+            current_dir_logs = list(Path(".").glob("*.log"))
+            log_files.extend(current_dir_logs)
+            
+            if not log_files:
+                await query.edit_message_text(
+                    "❌ 未找到日志文件\n\n"
+                    "请确保日志记录已启用",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 返回", callback_data='admin_debug')
+                    ]])
+                )
+                return
+            
+            # 创建日志摘要
+            summary_text = "📋 **日志文件列表：**\n\n"
+            
+            for log_file in log_files[:10]:  # 最多显示10个文件
+                try:
+                    size = log_file.stat().st_size / 1024  # KB
+                    modified = datetime.fromtimestamp(log_file.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+                    summary_text += f"📄 {log_file.name}\n"
+                    summary_text += f"   大小: {size:.1f} KB | 修改: {modified}\n\n"
+                except:
+                    continue
+            
+            # 读取最新日志的最后几行
+            if log_files:
+                latest_log = max(log_files, key=lambda x: x.stat().st_mtime)
+                try:
+                    with open(latest_log, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = f.readlines()
+                        last_lines = lines[-20:] if len(lines) > 20 else lines
+                        
+                    summary_text += f"\n📄 **最新日志预览** ({latest_log.name}):\n```\n"
+                    summary_text += "".join(last_lines[-10:])  # 只显示最后10行
+                    summary_text += "\n```"
+                except Exception as e:
+                    summary_text += f"\n❌ 无法读取日志内容: {e}"
+            
+            # 发送日志文件
+            try:
+                # 发送最新的日志文件
+                if log_files:
+                    latest_log = max(log_files, key=lambda x: x.stat().st_mtime)
+                    if latest_log.stat().st_size < 50 * 1024 * 1024:  # 小于50MB
+                        with open(latest_log, 'rb') as f:
+                            await query.message.reply_document(
+                                document=f,
+                                filename=latest_log.name,
+                                caption=f"📋 日志文件: {latest_log.name}"
+                            )
+                    else:
+                        summary_text += f"\n\n⚠️ 日志文件过大 ({latest_log.stat().st_size / 1024 / 1024:.1f} MB)，无法发送"
+            except Exception as e:
+                self.logger.error(f"发送日志文件失败: {e}")
+            
+            await query.edit_message_text(
+                summary_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 返回", callback_data='admin_debug')
+                ]])
+            )
+            
+        except Exception as e:
+            self.logger.error(f"导出日志失败: {e}")
+            await query.edit_message_text(
+                f"❌ 导出日志失败: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 返回", callback_data='admin_debug')
+                ]])
+            )
     
     # ===== 通知功能 =====
     
