@@ -75,7 +75,7 @@ class VPSMonitor:
             print("🚀 启动VPS监控系统 v3.1 (多用户版)...")
             await self.initialize()
             
-            # 发送启动通知
+            # 发送启动通知 - 修改为只通知管理员
             config = self.config_manager.config
             startup_message = (
                 "🚀 **VPS监控程序 v3.1 已启动** (多用户版)\n\n"
@@ -104,7 +104,23 @@ class VPSMonitor:
                 "🧩 管理员可使用 /admin 管理\n\n"
                 "👨‍💻 作者: kure29 | https://kure29.com"
             )
-            await self.telegram_bot.send_notification(startup_message, parse_mode='Markdown')
+            
+            # 只发送给管理员
+            if config.admin_ids:
+                for admin_id in config.admin_ids:
+                    try:
+                        await self.telegram_bot.send_notification(
+                            startup_message, 
+                            parse_mode='Markdown', 
+                            chat_id=admin_id
+                        )
+                        self.logger.info(f"启动通知已发送给管理员: {admin_id}")
+                    except Exception as e:
+                        self.logger.error(f"发送启动通知给管理员 {admin_id} 失败: {e}")
+            else:
+                # 如果没有配置管理员，发送到默认频道
+                await self.telegram_bot.send_notification(startup_message, parse_mode='Markdown')
+                self.logger.info("启动通知已发送到默认频道")
             
             # 执行启动检查
             await self._perform_startup_check()
@@ -129,12 +145,21 @@ class VPSMonitor:
         # 获取所有启用的监控项（包括全局项目）
         items = await self.db_manager.get_monitor_items(enabled_only=True)
         if not items:
-            await self.telegram_bot.send_notification("⚠️ 当前没有监控商品")
+            # 只通知管理员
+            config = self.config_manager.config
+            if config.admin_ids:
+                for admin_id in config.admin_ids:
+                    await self.telegram_bot.send_notification("⚠️ 当前没有监控商品", chat_id=admin_id)
             print("⚠️ 当前没有监控商品")
             return
         
         print(f"🔍 开始智能检查 {len(items)} 个监控项...")
-        await self.telegram_bot.send_notification("🧠 正在进行智能启动检查...")
+        
+        # 只通知管理员
+        config = self.config_manager.config
+        if config.admin_ids:
+            for admin_id in config.admin_ids:
+                await self.telegram_bot.send_notification("🧠 正在进行智能启动检查...", chat_id=admin_id)
         
         success_count = 0
         fail_count = 0
@@ -185,7 +210,13 @@ class VPSMonitor:
             f"⚠️ 低置信度: {low_confidence_count} 个\n\n"
             f"🎯 多用户监控系统已就绪"
         )
-        await self.telegram_bot.send_notification(summary)
+        
+        # 只通知管理员
+        config = self.config_manager.config
+        if config.admin_ids:
+            for admin_id in config.admin_ids:
+                await self.telegram_bot.send_notification(summary, chat_id=admin_id)
+        
         print(f"\n{summary}")
     
     async def _update_item_status(self, item_id: str, status: bool) -> None:
