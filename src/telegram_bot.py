@@ -1092,28 +1092,96 @@ class TelegramBot:
     # ===== 通知设置功能（简化版）=====
     
     async def _show_notification_settings(self, message_or_query, user_id: str, edit_message: bool = True) -> None:
-        """显示通知设置 - 改进版"""
+        """显示通知设置 - 修复版"""
         try:
-            settings = await self.db_manager.get_user_notification_settings(user_id)
+            # 安全获取用户通知设置
+            settings = None
+            try:
+                settings = await self.db_manager.get_user_notification_settings(user_id)
+            except Exception as e:
+                self.logger.error(f"获取用户通知设置失败: {e}")
             
+            # 如果获取失败或设置不存在，创建默认设置
             if not settings:
-                settings = await self.db_manager.create_user_notification_settings(user_id)
+                try:
+                    self.logger.info(f"为用户 {user_id} 创建默认通知设置")
+                    settings = await self.db_manager.create_user_notification_settings(user_id)
+                except Exception as e:
+                    self.logger.error(f"创建默认通知设置失败: {e}")
+                    # 如果创建也失败，显示错误信息
+                    error_text = (
+                        "❌ **通知设置初始化失败**\n\n"
+                        "可能的原因：\n"
+                        "• 数据库连接问题\n"
+                        "• 表结构损坏\n"
+                        "• 权限不足\n\n"
+                        "请联系管理员或运行修复工具"
+                    )
+                    keyboard = [[InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]]
+                    
+                    if edit_message and hasattr(message_or_query, 'edit_message_text'):
+                        await message_or_query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+                    else:
+                        await message_or_query.reply_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+                    return
             
             # 获取用户基本信息
-            user = await self.db_manager.get_user(user_id)
-            user_display = user.username or user.first_name or f"用户{user_id}" if user else f"用户{user_id}"
+            user = None
+            try:
+                user = await self.db_manager.get_user(user_id)
+            except Exception as e:
+                self.logger.error(f"获取用户信息失败: {e}")
+            
+            user_display = "未知用户"
+            my_items_count = 0
+            
+            if user:
+                user_display = user.username or user.first_name or f"用户{user_id}"
+                # 安全获取用户监控项目数量
+                try:
+                    user_items = await self.db_manager.get_monitor_items(user_id=user_id, include_global=False)
+                    my_items_count = len(user_items) if user_items else 0
+                except Exception as e:
+                    self.logger.error(f"获取用户监控项目失败: {e}")
+            
+            # 安全处理设置数据
+            try:
+                # 如果settings是字典类型（来自修复后的方法）
+                if isinstance(settings, dict):
+                    enable_notifications = settings.get('enable_notifications', True)
+                    max_daily_notifications = settings.get('max_daily_notifications', 10)
+                    notification_cooldown = settings.get('notification_cooldown', 3600)
+                    quiet_hours_start = settings.get('quiet_hours_start', 23)
+                    quiet_hours_end = settings.get('quiet_hours_end', 7)
+                    daily_notification_count = settings.get('daily_notification_count', 0)
+                    notification_date = settings.get('notification_date', '')
+                else:
+                    # 如果settings是对象类型
+                    enable_notifications = getattr(settings, 'enable_notifications', True)
+                    max_daily_notifications = getattr(settings, 'max_daily_notifications', 10)
+                    notification_cooldown = getattr(settings, 'notification_cooldown', 3600)
+                    quiet_hours_start = getattr(settings, 'quiet_hours_start', 23)
+                    quiet_hours_end = getattr(settings, 'quiet_hours_end', 7)
+                    daily_notification_count = getattr(settings, 'daily_notification_count', 0)
+                    notification_date = getattr(settings, 'notification_date', '')
+            except Exception as e:
+                self.logger.error(f"处理设置数据失败: {e}")
+                # 使用默认值
+                enable_notifications = True
+                max_daily_notifications = 10
+                notification_cooldown = 3600
+                quiet_hours_start = 23
+                quiet_hours_end = 7
+                daily_notification_count = 0
+                notification_date = ''
             
             # 通知状态
-            status_emoji = "✅" if settings.enable_notifications else "❌"
-            status_text = "已启用" if settings.enable_notifications else "已禁用"
+            status_emoji = "✅" if enable_notifications else "❌"
+            status_text = "已启用" if enable_notifications else "已禁用"
             
             # 计算今日通知数量
             today = datetime.now().date().isoformat()
-            daily_count = settings.daily_notification_count if settings.notification_date == today else 0
-            
-            # 获取用户的监控项目数量
-            user_items = await self.db_manager.get_monitor_items(user_id=user_id, include_global=False)
-            my_items_count = len(user_items)
+            daily_count = daily_notification_count if notification_date == today else 0
             
             text = (
                 f"🔔 **个人通知设置**\n\n"
@@ -1121,12 +1189,12 @@ class TelegramBot:
                 f"📊 **我的监控项目:** {my_items_count} 个\n\n"
                 
                 f"📱 **通知状态:** {status_emoji} {status_text}\n"
-                f"📈 **今日通知:** {daily_count}/{settings.max_daily_notifications} 条\n\n"
+                f"📈 **今日通知:** {daily_count}/{max_daily_notifications} 条\n\n"
                 
                 f"⚙️ **通知规则:**\n"
-                f"• 🕐 冷却时间: {settings.notification_cooldown // 60} 分钟\n"
-                f"• 📊 每日限制: {settings.max_daily_notifications} 条\n"
-                f"• 🌙 免打扰: {settings.quiet_hours_start:02d}:00 - {settings.quiet_hours_end:02d}:00\n\n"
+                f"• 🕐 冷却时间: {notification_cooldown // 60} 分钟\n"
+                f"• 📊 每日限制: {max_daily_notifications} 条\n"
+                f"• 🌙 免打扰: {quiet_hours_start:02d}:00 - {quiet_hours_end:02d}:00\n\n"
                 
                 f"🎯 **工作原理:**\n"
                 f"• 只有您添加的监控项目有货时才通知您\n"
@@ -1143,7 +1211,7 @@ class TelegramBot:
             keyboard = []
             
             # 主要控制按钮
-            if settings.enable_notifications:
+            if enable_notifications:
                 keyboard.extend([
                     [InlineKeyboardButton("🔴 关闭通知", callback_data=f'toggle_notifications_{user_id}')],
                     [
@@ -1175,14 +1243,26 @@ class TelegramBot:
                 await message_or_query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
                 
         except Exception as e:
-            self.logger.error(f"显示通知设置失败: {e}")
-            error_text = "❌ 加载通知设置失败，请稍后重试"
+            self.logger.error(f"显示通知设置失败: {e}", exc_info=True)
+            error_text = (
+                "❌ **加载通知设置失败**\n\n"
+                f"错误详情: {str(e)}\n\n"
+                "请尝试以下解决方案：\n"
+                "1. 重新启动机器人\n"
+                "2. 运行修复工具\n"
+                "3. 联系管理员\n\n"
+                "如果问题持续存在，可能需要重置数据库"
+            )
             keyboard = [[InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]]
             
-            if edit_message and hasattr(message_or_query, 'edit_message_text'):
-                await message_or_query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                await message_or_query.reply_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            try:
+                if edit_message and hasattr(message_or_query, 'edit_message_text'):
+                    await message_or_query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+                else:
+                    await message_or_query.reply_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            except Exception as final_error:
+                self.logger.error(f"发送错误信息也失败了: {final_error}")
+
     
     # ===== 管理员功能实现 =====
     
