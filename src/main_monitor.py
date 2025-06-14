@@ -248,31 +248,32 @@ class VPSMonitor:
                 self.logger.error(f"检查项目失败 {item.url}: {e}")
     
     async def _check_for_notifications(self, item, stock_available: bool, check_info: Dict) -> None:
-    """检查是否需要发送通知 - 修改为通知用户本人"""
-    # 只有状态变化或首次检查时才通知
-    if item.status != stock_available:
-        confidence = check_info.get('confidence', 0)
-        
-        if stock_available and confidence >= self.config_manager.config.confidence_threshold:
-            # 检查用户是否可以收到通知
-            can_notify = await self.db_manager.check_can_notify_user(item.user_id, item.id)
+        """检查是否需要发送通知 - 修改为通知用户本人"""
+        # 只有状态变化或首次检查时才通知
+        if item.status != stock_available:
+            confidence = check_info.get('confidence', 0)
             
-            if can_notify:
-                # 有货通知
-                notification = {
-                    'type': 'stock_available',
-                    'item': item,
-                    'confidence': confidence,
-                    'timestamp': datetime.now()
-                }
+            if stock_available and confidence >= self.config_manager.config.confidence_threshold:
+                # 检查用户是否可以收到通知
+                can_notify = await self.db_manager.check_can_notify_user(item.user_id, item.id)
                 
-                # 检查通知冷却
-                cooldown_key = f"{item.id}_available"
-                last_notified = self._last_notified.get(cooldown_key)
-                
-                if not last_notified or (datetime.now() - last_notified).seconds > self.config_manager.config.notification_cooldown:
-                    self._pending_notifications.append(notification)
-                    self._last_notified[cooldown_key] = datetime.now()
+                if can_notify:
+                    # 有货通知
+                    notification = {
+                        'type': 'stock_available',
+                        'item': item,
+                        'confidence': confidence,
+                        'timestamp': datetime.now()
+                    }
+                    
+                    # 检查通知冷却
+                    cooldown_key = f"{item.id}_available"
+                    last_notified = self._last_notified.get(cooldown_key)
+                    
+                    if not last_notified or (datetime.now() - last_notified).seconds > self.config_manager.config.notification_cooldown:
+                        self._pending_notifications.append(notification)
+                        self._last_notified[cooldown_key] = datetime.now()
+    
     async def _send_user_notifications(self, user_id: str, notifications: List[Dict]) -> None:
         """发送用户通知"""
         try:
@@ -361,6 +362,7 @@ class VPSMonitor:
                 
         except Exception as e:
             self.logger.error(f"处理用户通知失败: {e}")
+    
     async def _process_notifications(self) -> None:
         """处理待发送的通知"""
         if not self._pending_notifications:
@@ -386,6 +388,7 @@ class VPSMonitor:
         # 清空待发送列表
         self._pending_notifications.clear()
         self._last_aggregation_time = datetime.now()
+    
     async def _send_aggregated_notifications(self, notifications: List[Dict]) -> None:
         """发送聚合通知"""
         if len(notifications) == 1:
