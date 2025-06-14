@@ -871,7 +871,12 @@ class TelegramBot:
             elif data.startswith('toggle_item_'):
                 item_id = data.replace('toggle_item_', '')
                 await self._toggle_item_status(query, item_id, user_info)
-            
+            elif data.startswith('toggle_notifications_'):
+                user_id = data.replace('toggle_notifications_', '')
+                if user_id == user_info.id or self._check_admin_permission(user_info.id):
+                    await self._handle_toggle_notifications(query, user_id)
+                else:
+                    await query.answer("❌ 无权限操作", show_alert=True)
             elif data.startswith('debug_item_'):
                 item_id = data.replace('debug_item_', '')
                 items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
