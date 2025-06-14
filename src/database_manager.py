@@ -365,6 +365,7 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"更新用户封禁状态失败: {e}")
             return False
+    
     async def get_all_users(self, include_banned: bool = False) -> List[User]:
         """获取所有用户"""
         users = []
@@ -413,6 +414,7 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"更新监控项状态失败: {e}")
             return False
+    
     async def add_monitor_item(self, user_id: str, name: str, url: str, 
                              config: str = "", tags: List[str] = None, 
                              is_global: bool = False) -> Tuple[str, bool]:
@@ -462,49 +464,49 @@ class DatabaseManager:
     
     async def get_monitor_items(self, user_id: str = None, enabled_only: bool = True, 
                           include_global: bool = True) -> Dict[str, MonitorItem]:
-    """获取监控项"""
-    items = {}
-    
-    sql = "SELECT * FROM monitor_items WHERE 1=1"
-    params = []
-    
-    if enabled_only:
-        sql += " AND enabled = 1"
-    
-    if user_id:
-        if include_global:
-            sql += " AND (user_id = ? OR is_global = 1)"
-            params.append(user_id)
-        else:
-            sql += " AND user_id = ?"
-            params.append(user_id)
-    
-    # 修改这里：改为升序排序（ASC），先添加的在前
-    sql += " ORDER BY created_at ASC"
-    
-    async with aiosqlite.connect(self.db_path) as db:
-        async with db.execute(sql, params) as cursor:
-            async for row in cursor:
-                item = MonitorItem(
-                    id=row[0],
-                    user_id=row[1],
-                    name=row[2],
-                    url=row[3],
-                    config=row[4],
-                    created_at=row[5],
-                    last_checked=row[6],
-                    status=None if row[7] is None else bool(row[7]),
-                    notification_count=row[8],
-                    success_count=row[9],
-                    failure_count=row[10],
-                    last_error=row[11],
-                    tags=row[12],
-                    enabled=bool(row[13]),
-                    is_global=bool(row[14])
-                )
-                items[item.id] = item
-    
-    return items
+        """获取监控项"""
+        items = {}
+        
+        sql = "SELECT * FROM monitor_items WHERE 1=1"
+        params = []
+        
+        if enabled_only:
+            sql += " AND enabled = 1"
+        
+        if user_id:
+            if include_global:
+                sql += " AND (user_id = ? OR is_global = 1)"
+                params.append(user_id)
+            else:
+                sql += " AND user_id = ?"
+                params.append(user_id)
+        
+        # 修改这里：改为升序排序（ASC），先添加的在前
+        sql += " ORDER BY created_at ASC"
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(sql, params) as cursor:
+                async for row in cursor:
+                    item = MonitorItem(
+                        id=row[0],
+                        user_id=row[1],
+                        name=row[2],
+                        url=row[3],
+                        config=row[4],
+                        created_at=row[5],
+                        last_checked=row[6],
+                        status=None if row[7] is None else bool(row[7]),
+                        notification_count=row[8],
+                        success_count=row[9],
+                        failure_count=row[10],
+                        last_error=row[11],
+                        tags=row[12],
+                        enabled=bool(row[13]),
+                        is_global=bool(row[14])
+                    )
+                    items[item.id] = item
+        
+        return items
     
     async def remove_monitor_item(self, item_id: str, user_id: str, 
                                 is_admin: bool = False) -> bool:
