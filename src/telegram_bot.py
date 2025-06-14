@@ -837,7 +837,21 @@ class TelegramBot:
                 parts = data.split('_')
                 target_user_id = parts[2]
                 page = int(parts[3])
+                
+                # 检查是否是刷新操作（通过判断是否有刷新标记）
+                is_refresh = len(parts) > 4 and parts[4] == 'refresh'
+                
+                if is_refresh or (hasattr(query.message, 'reply_markup') and 
+                                 any('🔄 刷新' in str(btn) for row in query.message.reply_markup.inline_keyboard for btn in row)):
+                    try:
+                        # 临时修改消息以避免"not modified"错误
+                        await query.edit_message_text("🔄 正在刷新监控列表...")
+                        await asyncio.sleep(0.1)  # 短暂延迟确保消息已更新
+                    except Exception as e:
+                        self.logger.debug(f"刷新时的临时消息更新失败: {e}")
+                
                 await self._show_monitor_list(query, target_user_id, page, edit_message=True)
+
             
             elif data.startswith('item_detail_'):
                 item_id = data.replace('item_detail_', '')
