@@ -37,6 +37,13 @@ class Config:
     daily_add_limit: int = 50
     enable_vendor_optimization: bool = True
     
+    # 用户通知配置
+    user_notification_enabled: bool = True
+    default_user_cooldown: int = 3600
+    default_daily_limit: int = 10
+    default_quiet_hours_start: int = 23
+    default_quiet_hours_end: int = 7
+    
     def __post_init__(self):
         """初始化后处理"""
         if not self.bot_token or self.bot_token == "YOUR_TELEGRAM_BOT_TOKEN":
