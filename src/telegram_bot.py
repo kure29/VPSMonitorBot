@@ -897,7 +897,40 @@ class TelegramBot:
             
             elif data == 'notification_settings':
                 await self._show_notification_settings(query, user_info.id, edit_message=True)
+            elif data.startswith('notification_stats_'):
+                user_id = data.replace('notification_stats_', '')
+                if user_id == user_info.id or self._check_admin_permission(user_info.id):
+                    await self._show_notification_stats(query, user_id)
+                else:
+                    await query.answer("❌ 无权限操作", show_alert=True)
             
+            elif data.startswith('cooldown_settings_'):
+                user_id = data.replace('cooldown_settings_', '')
+                if user_id == user_info.id or self._check_admin_permission(user_info.id):
+                    await self._show_cooldown_settings(query, user_id)
+                else:
+                    await query.answer("❌ 无权限操作", show_alert=True)
+            
+            elif data.startswith('limit_settings_'):
+                user_id = data.replace('limit_settings_', '')
+                if user_id == user_info.id or self._check_admin_permission(user_info.id):
+                    await self._show_limit_settings(query, user_id)
+                else:
+                    await query.answer("❌ 无权限操作", show_alert=True)
+            
+            elif data.startswith('quiet_settings_'):
+                user_id = data.replace('quiet_settings_', '')
+                if user_id == user_info.id or self._check_admin_permission(user_info.id):
+                    await self._show_quiet_settings(query, user_id)
+                else:
+                    await query.answer("❌ 无权限操作", show_alert=True)
+            
+            elif data.startswith('test_notification_'):
+                user_id = data.replace('test_notification_', '')
+                if user_id == user_info.id or self._check_admin_permission(user_info.id):
+                    await self._send_test_notification(query, user_id)
+                else:
+                    await query.answer("❌ 无权限操作", show_alert=True)
             elif data == 'help':
                 # 修复：直接显示帮助信息，而不是调用 _help_command
                 help_text = (
@@ -1059,39 +1092,80 @@ class TelegramBot:
     # ===== 通知设置功能（简化版）=====
     
     async def _show_notification_settings(self, message_or_query, user_id: str, edit_message: bool = True) -> None:
-        """显示通知设置（简化版，避免依赖额外的数据库表）"""
+        """显示通知设置 - 改进版"""
         try:
+            settings = await self.db_manager.get_user_notification_settings(user_id)
+            
+            if not settings:
+                settings = await self.db_manager.create_user_notification_settings(user_id)
+            
             # 获取用户基本信息
             user = await self.db_manager.get_user(user_id)
-            if not user:
-                raise Exception("用户不存在")
+            user_display = user.username or user.first_name or f"用户{user_id}" if user else f"用户{user_id}"
             
-            user_display = user.username or user.first_name or f"用户{user_id}"
+            # 通知状态
+            status_emoji = "✅" if settings.enable_notifications else "❌"
+            status_text = "已启用" if settings.enable_notifications else "已禁用"
             
-            # 简化的通知设置显示
+            # 计算今日通知数量
+            today = datetime.now().date().isoformat()
+            daily_count = settings.daily_notification_count if settings.notification_date == today else 0
+            
+            # 获取用户的监控项目数量
+            user_items = await self.db_manager.get_monitor_items(user_id=user_id, include_global=False)
+            my_items_count = len(user_items)
+            
             text = (
-                f"🔔 **通知设置** - {user_display}\n\n"
+                f"🔔 **个人通知设置**\n\n"
+                f"👤 **用户:** {user_display}\n"
+                f"📊 **我的监控项目:** {my_items_count} 个\n\n"
                 
-                f"📊 **当前状态:**\n"
-                f"• 通知开关: ✅ 已启用\n"
-                f"• 总通知数: {user.total_notifications}\n\n"
+                f"📱 **通知状态:** {status_emoji} {status_text}\n"
+                f"📈 **今日通知:** {daily_count}/{settings.max_daily_notifications} 条\n\n"
                 
                 f"⚙️ **通知规则:**\n"
-                f"• 库存变化时通知管理员\n"
-                f"• 避免短时间内重复通知\n"
-                f"• 智能聚合相似通知\n\n"
+                f"• 🕐 冷却时间: {settings.notification_cooldown // 60} 分钟\n"
+                f"• 📊 每日限制: {settings.max_daily_notifications} 条\n"
+                f"• 🌙 免打扰: {settings.quiet_hours_start:02d}:00 - {settings.quiet_hours_end:02d}:00\n\n"
                 
-                f"📝 **说明:**\n"
-                f"• 当您的监控项目库存变化时\n"
-                f"• 系统会通知管理员\n"
-                f"• 管理员会及时处理\n\n"
+                f"🎯 **工作原理:**\n"
+                f"• 只有您添加的监控项目有货时才通知您\n"
+                f"• 同一商品在冷却时间内不会重复通知\n"
+                f"• 免打扰时间段内不发送通知\n"
+                f"• 达到每日限制后停止当日通知\n\n"
                 
-                f"💡 目前通知功能主要面向管理员"
+                f"💡 **提示:**\n"
+                f"• 全局监控项目的变化不会通知您\n"
+                f"• 您可以随时开启/关闭通知功能\n"
+                f"• 管理员添加的项目不会通知普通用户"
             )
             
-            keyboard = [
+            keyboard = []
+            
+            # 主要控制按钮
+            if settings.enable_notifications:
+                keyboard.extend([
+                    [InlineKeyboardButton("🔴 关闭通知", callback_data=f'toggle_notifications_{user_id}')],
+                    [
+                        InlineKeyboardButton("📊 查看统计", callback_data=f'notification_stats_{user_id}'),
+                        InlineKeyboardButton("🔄 重置计数", callback_data=f'reset_daily_count_{user_id}')
+                    ]
+                ])
+            else:
+                keyboard.append([InlineKeyboardButton("🟢 开启通知", callback_data=f'toggle_notifications_{user_id}')])
+            
+            # 设置按钮
+            keyboard.extend([
+                [
+                    InlineKeyboardButton("⏰ 冷却设置", callback_data=f'cooldown_settings_{user_id}'),
+                    InlineKeyboardButton("📈 限制设置", callback_data=f'limit_settings_{user_id}')
+                ],
+                [
+                    InlineKeyboardButton("🌙 免打扰", callback_data=f'quiet_settings_{user_id}'),
+                    InlineKeyboardButton("🧪 测试通知", callback_data=f'test_notification_{user_id}')
+                ],
                 [InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]
-            ]
+            ])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -1102,12 +1176,7 @@ class TelegramBot:
                 
         except Exception as e:
             self.logger.error(f"显示通知设置失败: {e}")
-            error_text = (
-                "🔔 **通知设置**\n\n"
-                "📱 当监控项目库存变化时\n"
-                "系统会自动通知管理员\n\n"
-                "💡 通知功能正常运行中"
-            )
+            error_text = "❌ 加载通知设置失败，请稍后重试"
             keyboard = [[InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]]
             
             if edit_message and hasattr(message_or_query, 'edit_message_text'):
@@ -1595,7 +1664,163 @@ class TelegramBot:
             )
     
     # ===== 通知功能 =====
+async def _show_notification_stats(self, query, user_id: str) -> None:
+    """显示通知统计"""
+    try:
+        settings = await self.db_manager.get_user_notification_settings(user_id)
+        user = await self.db_manager.get_user(user_id)
+        
+        if not settings or not user:
+            await query.answer("用户数据不存在", show_alert=True)
+            return
+        
+        # 计算今日通知
+        today = datetime.now().date().isoformat()
+        daily_count = settings.daily_notification_count if settings.notification_date == today else 0
+        
+        user_display = user.username or user.first_name or f"用户{user_id}"
+        
+        text = (
+            f"📊 **通知统计** - {user_display}\n\n"
+            
+            f"📈 **今日数据:**\n"
+            f"• 已发送: {daily_count}/{settings.max_daily_notifications} 条\n"
+            f"• 剩余额度: {max(0, settings.max_daily_notifications - daily_count)} 条\n\n"
+            
+            f"📋 **历史统计:**\n"
+            f"• 总通知数: {user.total_notifications} 条\n"
+            f"• 监控项目: {user.total_monitors} 个\n"
+            f"• 今日添加: {user.daily_add_count} 个\n\n"
+            
+            f"⚙️ **当前设置:**\n"
+            f"• 通知状态: {'✅ 启用' if settings.enable_notifications else '❌ 禁用'}\n"
+            f"• 冷却时间: {settings.notification_cooldown // 60} 分钟\n"
+            f"• 每日限制: {settings.max_daily_notifications} 条\n"
+            f"• 免打扰: {settings.quiet_hours_start:02d}:00-{settings.quiet_hours_end:02d}:00\n\n"
+            
+            f"🕐 **最近活动:**\n"
+            f"• 最后通知: {settings.last_notification_time.split('T')[0] if settings.last_notification_time else '从未'}\n"
+            f"• 注册时间: {user.created_at.split('T')[0] if user.created_at else '未知'}\n"
+            f"• 最后活跃: {user.last_active.split('T')[0] if user.last_active else '未知'}"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 刷新", callback_data=f'notification_stats_{user_id}')],
+            [InlineKeyboardButton("🔙 返回设置", callback_data='notification_settings')]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        
+    except Exception as e:
+        self.logger.error(f"显示通知统计失败: {e}")
+        await query.answer("加载统计失败", show_alert=True)
+
+async def _show_cooldown_settings(self, query, user_id: str) -> None:
+    """显示冷却时间设置"""
+    settings = await self.db_manager.get_user_notification_settings(user_id)
+    current_minutes = settings.notification_cooldown // 60 if settings else 60
     
+    text = (
+        f"⏰ **冷却时间设置**\n\n"
+        f"当前设置: **{current_minutes} 分钟**\n\n"
+        f"📝 **说明:**\n"
+        f"• 同一商品在冷却时间内不会重复通知\n"
+        f"• 避免频繁通知打扰\n"
+        f"• 建议设置15-60分钟\n\n"
+        f"💡 **推荐设置:**\n"
+        f"• 15分钟 - 快速响应\n"
+        f"• 30分钟 - 平衡模式\n"
+        f"• 60分钟 - 低频模式\n\n"
+        f"**注意:** 修改设置需要联系管理员"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 返回设置", callback_data='notification_settings')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def _show_limit_settings(self, query, user_id: str) -> None:
+    """显示每日限制设置"""
+    settings = await self.db_manager.get_user_notification_settings(user_id)
+    current_limit = settings.max_daily_notifications if settings else 10
+    
+    text = (
+        f"📈 **每日通知限制**\n\n"
+        f"当前设置: **{current_limit} 条/天**\n\n"
+        f"📝 **说明:**\n"
+        f"• 防止通知过多影响体验\n"
+        f"• 达到限制后当日停止通知\n"
+        f"• 次日自动重置\n\n"
+        f"💡 **推荐设置:**\n"
+        f"• 5条 - 精选模式\n"
+        f"• 10条 - 标准模式\n"
+        f"• 20条 - 高频模式\n\n"
+        f"**注意:** 修改设置需要联系管理员"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 返回设置", callback_data='notification_settings')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def _show_quiet_settings(self, query, user_id: str) -> None:
+    """显示免打扰设置"""
+    settings = await self.db_manager.get_user_notification_settings(user_id)
+    start_hour = settings.quiet_hours_start if settings else 23
+    end_hour = settings.quiet_hours_end if settings else 7
+    
+    text = (
+        f"🌙 **免打扰时间**\n\n"
+        f"当前设置: **{start_hour:02d}:00 - {end_hour:02d}:00**\n\n"
+        f"📝 **说明:**\n"
+        f"• 免打扰时间段内不发送通知\n"
+        f"• 适合设置为睡眠时间\n"
+        f"• 跨午夜时间段支持\n\n"
+        f"💡 **常用设置:**\n"
+        f"• 23:00-07:00 - 夜间休息\n"
+        f"• 22:00-08:00 - 早睡晚起\n"
+        f"• 00:00-06:00 - 深夜至清晨\n\n"
+        f"**注意:** 修改设置需要联系管理员"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 返回设置", callback_data='notification_settings')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+    async def _send_test_notification(self, query, user_id: str) -> None:
+        """发送测试通知"""
+        try:
+            user = await self.db_manager.get_user(user_id)
+            if not user:
+                await query.answer("用户不存在", show_alert=True)
+                return
+            
+            user_display = user.username or user.first_name or f"用户{user_id}"
+            
+            test_message = (
+                f"🧪 **测试通知**\n\n"
+                f"👋 Hi {user_display}！\n\n"
+                f"📱 这是一条测试通知，用于验证通知功能是否正常工作。\n\n"
+                f"✅ 如果您收到此消息，说明通知功能正常！\n\n"
+                f"🕐 发送时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"🤖 来自: VPS监控机器人 v3.1"
+            )
+            
+            # 发送测试通知
+            await self.send_notification(test_message, parse_mode='Markdown', chat_id=user_id)
+            
+            await query.answer("✅ 测试通知已发送，请检查您的聊天记录", show_alert=True)
+            
+            # 不计入每日通知统计
+            self.logger.info(f"向用户 {user_display} ({user_id}) 发送了测试通知")
+            
+        except Exception as e:
+            self.logger.error(f"发送测试通知失败: {e}")
+            await query.answer("❌ 发送测试通知失败", show_alert=True)    
     async def send_notification(self, message: str, parse_mode: str = None, chat_id: str = None) -> None:
         """发送通知"""
         try:
