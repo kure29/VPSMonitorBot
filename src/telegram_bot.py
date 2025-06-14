@@ -856,7 +856,24 @@ class TelegramBot:
             elif data.startswith('toggle_item_'):
                 item_id = data.replace('toggle_item_', '')
                 await self._toggle_item_status(query, item_id, user_info)
-
+            elif data.startswith('debug_item_'):
+                item_id = data.replace('debug_item_', '')
+                items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
+                item = items.get(item_id)
+                if item:
+                    await query.edit_message_text("🔍 正在进行调试分析...")
+                    await self._debug_url(query.message, item.url)
+                else:
+                    await query.answer("监控项不存在", show_alert=True)
+            
+            elif data.startswith('copy_url_'):
+                item_id = data.replace('copy_url_', '')
+                items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
+                item = items.get(item_id)
+                if item:
+                    await query.answer(f"请手动复制链接：{item.url}", show_alert=True)
+                else:
+                    await query.answer("监控项不存在", show_alert=True)
             elif data == 'my_stats':
                 await query.edit_message_text("📊 正在加载统计信息...")
                 await self._show_user_statistics(query.message, user_info.id)
