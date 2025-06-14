@@ -647,7 +647,26 @@ class TelegramBot:
                 target_user_id = parts[2]
                 page = int(parts[3])
                 await self._show_monitor_list(query, target_user_id, page, edit_message=True)
+            elif data.startswith('item_detail_'):
+                item_id = data.replace('item_detail_', '')
+                await self._show_item_detail(query, item_id, user_info, edit_message=True)
+
+            elif data.startswith('edit_item_'):
+                item_id = data.replace('edit_item_', '')
+                await self._show_edit_item_prompt(query, item_id, edit_message=True)
             
+            elif data.startswith('delete_item_'):
+                item_id = data.replace('delete_item_', '')
+                await self._confirm_delete_item(query, item_id, user_info, edit_message=True)
+            
+            elif data.startswith('confirm_delete_'):
+                item_id = data.replace('confirm_delete_', '')
+                await self._delete_item(query, item_id, user_info)
+            
+            elif data.startswith('toggle_item_'):
+                item_id = data.replace('toggle_item_', '')
+                await self._toggle_item_status(query, item_id, user_info)
+
             elif data == 'my_stats':
                 await query.edit_message_text("📊 正在加载统计信息...")
                 await self._show_user_statistics(query.message, user_info.id)
