@@ -1,5 +1,5 @@
 #!/bin/bash
-# VPS监控系统 v3.1 - 快速修复版
+# VPS监控系统 v3.1 - 快速修复版（模块化）
 # 作者: kure29
 # 网站: https://kure29.com
 
@@ -137,7 +137,7 @@ check_config() {
 # ====== 状态检测函数 ======
 get_monitor_status() {
     local pids
-    pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || echo "")
+    pids=$(pgrep -f "python3.*main\.py" 2>/dev/null || echo "")
     
     if [[ -n "$pids" ]]; then
         echo "运行中"
@@ -150,7 +150,7 @@ get_monitor_status() {
 
 get_process_info() {
     local pids
-    pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || echo "")
+    pids=$(pgrep -f "python3.*main\.py" 2>/dev/null || echo "")
     
     if [[ -n "$pids" ]]; then
         local info_parts=()
@@ -231,7 +231,7 @@ show_banner() {
    ╚═══╝  ╚═╝     ╚══════╝    ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝
 EOF
     echo -e "${NC}"
-    echo -e "${PURPLE}VPS库存监控系统 v3.1 - 多用户智能监控版${NC}"
+    echo -e "${PURPLE}VPS库存监控系统 v3.1 - 多用户智能监控版（模块化）${NC}"
     echo -e "${CYAN}作者: kure29 | 网站: https://kure29.com${NC}"
     echo ""
 }
@@ -459,7 +459,7 @@ try:
             f'https://api.telegram.org/bot{config[\"bot_token\"]}/sendMessage', 
             json={
                 'chat_id': config['chat_id'], 
-                'text': '🤖 VPS监控系统 v3.1 测试消息 - 连接正常'
+                'text': '🤖 VPS监控系统 v3.1（模块化版本）测试消息 - 连接正常'
             }, 
             timeout=10
         )
@@ -501,8 +501,8 @@ start_monitor() {
     fi
     
     # 检查监控脚本
-    if [[ ! -f "src/monitor.py" ]]; then
-        log_error "监控脚本不存在: src/monitor.py"
+    if [[ ! -f "main.py" ]]; then
+        log_error "监控脚本不存在: main.py"
         return 1
     fi
     
@@ -515,7 +515,7 @@ start_monitor() {
     log_info "启动监控程序..."
     
     # 启动监控（后台运行）
-    nohup python3 src/monitor.py > "$MONITOR_LOG" 2>&1 &
+    nohup python3 main.py > "$MONITOR_LOG" 2>&1 &
     local pid=$!
     
     # 等待并检查是否成功启动
@@ -545,7 +545,7 @@ stop_monitor() {
     echo "========"
     
     local pids
-    pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || echo "")
+    pids=$(pgrep -f "python3.*main\.py" 2>/dev/null || echo "")
     
     if [[ -n "$pids" ]]; then
         log_info "停止监控程序..."
@@ -561,7 +561,7 @@ stop_monitor() {
         
         # 检查是否还在运行
         local remaining_pids
-        remaining_pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null || echo "")
+        remaining_pids=$(pgrep -f "python3.*main\.py" 2>/dev/null || echo "")
         if [[ -n "$remaining_pids" ]]; then
             log_warn "强制停止残留进程..."
             for pid in $remaining_pids; do
@@ -668,6 +668,17 @@ try:
         print(f'启用商品: {enabled_items} 个')
         print(f'禁用商品: {disabled_items} 个')
     
+    if 'users' in tables:
+        # 获取用户统计（多用户版本）
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_banned = 0')
+        active_users = cursor.fetchone()[0]
+        
+        print(f'总用户数: {total_users} 人')
+        print(f'活跃用户: {active_users} 人')
+    
     conn.close()
 except Exception as e:
     print(f'获取统计失败: {e}')
@@ -756,11 +767,25 @@ health_check() {
         ((issues++))
     fi
     
-    # 检查关键文件
-    if [[ -f "src/monitor.py" ]]; then
-        echo "✅ 监控脚本存在"
+    # 检查关键文件（新的文件结构）
+    if [[ -f "main.py" ]]; then
+        echo "✅ 主程序文件存在"
     else
-        echo "❌ 监控脚本缺失"
+        echo "❌ 主程序文件缺失"
+        ((issues++))
+    fi
+    
+    if [[ -f "src/main_monitor.py" ]]; then
+        echo "✅ 监控模块存在"
+    else
+        echo "❌ 监控模块缺失"
+        ((issues++))
+    fi
+    
+    if [[ -d "src/monitors" ]]; then
+        echo "✅ 监控器目录存在"
+    else
+        echo "❌ 监控器目录缺失"
         ((issues++))
     fi
     
@@ -792,6 +817,34 @@ health_check() {
     else
         echo -e "${RED}❌ 发现 $issues 个问题，需要立即处理${NC}"
     fi
+    
+    # 显示模块化结构信息
+    echo ""
+    echo "📁 模块化结构检查:"
+    echo "=================="
+    if [[ -f "src/config.py" ]]; then
+        echo "✅ 配置管理模块"
+    else
+        echo "❌ 配置管理模块缺失"
+    fi
+    
+    if [[ -f "src/telegram_bot.py" ]]; then
+        echo "✅ Telegram机器人模块"
+    else
+        echo "❌ Telegram机器人模块缺失"
+    fi
+    
+    if [[ -f "src/database_manager.py" ]]; then
+        echo "✅ 数据库管理模块"
+    else
+        echo "❌ 数据库管理模块缺失"
+    fi
+    
+    if [[ -f "src/vendor_optimization.py" ]]; then
+        echo "✅ 服务商优化模块"
+    else
+        echo "⚠️  服务商优化模块缺失（可选）"
+    fi
 }
 
 # ====== 主菜单 ======
@@ -822,7 +875,7 @@ show_menu() {
         
         if [[ "$status" == "运行中" ]]; then
             local pids
-            pids=$(pgrep -f "python3.*monitor.py" 2>/dev/null | head -1)
+            pids=$(pgrep -f "python3.*main\.py" 2>/dev/null | head -1)
             echo -e "监控状态: ${GREEN}运行中${NC} (PID: ${pids:-unknown})"
         else
             echo -e "监控状态: ${RED}未运行${NC}"
