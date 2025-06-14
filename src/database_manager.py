@@ -1,6 +1,7 @@
 """
 多用户版本的数据库管理器
 支持用户管理、权限控制、统计分析、用户通知功能
+修复版 - 解决通知功能相关问题
 """
 
 import sqlite3
@@ -749,103 +750,180 @@ class DatabaseManager:
                     """, (new_count, today, user_id))
                     await db.commit()
     
-    # ===== 用户通知功能方法 =====
+    # ===== 用户通知功能方法（修复版）=====
     
-    async def get_user_notification_settings(self, user_id: str) -> Optional[UserNotificationSettings]:
-        """获取用户通知设置"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT * FROM user_notification_settings WHERE user_id = ?", 
-                (user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    return UserNotificationSettings(
-                        id=row[0],
-                        user_id=row[1],
-                        enable_notifications=bool(row[2]),
-                        notification_cooldown=row[3],
-                        max_daily_notifications=row[4],
-                        quiet_hours_start=row[5],
-                        quiet_hours_end=row[6],
-                        last_notification_time=row[7],
-                        daily_notification_count=row[8],
-                        notification_date=row[9],
-                        created_at=row[10],
-                        updated_at=row[11]
-                    )
-        return None
+    async def get_user_notification_settings(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """获取用户通知设置 - 修复版，返回字典格式"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    "SELECT * FROM user_notification_settings WHERE user_id = ?", 
+                    (user_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        return {
+                            'id': row[0],
+                            'user_id': row[1],
+                            'enable_notifications': bool(row[2]),
+                            'notification_cooldown': row[3],
+                            'max_daily_notifications': row[4],
+                            'quiet_hours_start': row[5],
+                            'quiet_hours_end': row[6],
+                            'last_notification_time': row[7],
+                            'daily_notification_count': row[8],
+                            'notification_date': row[9],
+                            'created_at': row[10],
+                            'updated_at': row[11]
+                        }
+                    else:
+                        # 如果不存在，尝试创建默认设置
+                        self.logger.info(f"为用户 {user_id} 创建默认通知设置")
+                        await self.create_user_notification_settings(user_id)
+                        
+                        # 重新查询
+                        async with db.execute(
+                            "SELECT * FROM user_notification_settings WHERE user_id = ?", 
+                            (user_id,)
+                        ) as cursor2:
+                            row2 = await cursor2.fetchone()
+                            if row2:
+                                return {
+                                    'id': row2[0],
+                                    'user_id': row2[1],
+                                    'enable_notifications': bool(row2[2]),
+                                    'notification_cooldown': row2[3],
+                                    'max_daily_notifications': row2[4],
+                                    'quiet_hours_start': row2[5],
+                                    'quiet_hours_end': row2[6],
+                                    'last_notification_time': row2[7],
+                                    'daily_notification_count': row2[8],
+                                    'notification_date': row2[9],
+                                    'created_at': row2[10],
+                                    'updated_at': row2[11]
+                                }
+            return None
+        except Exception as e:
+            self.logger.error(f"获取用户通知设置失败: {e}")
+            return None
     
-    async def create_user_notification_settings(self, user_id: str) -> UserNotificationSettings:
-        """创建默认用户通知设置"""
+    async def create_user_notification_settings(self, user_id: str) -> Dict[str, Any]:
+        """创建默认用户通知设置 - 修复版"""
         settings_id = str(int(datetime.now().timestamp() * 1000))
         now = datetime.now().isoformat()
         
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO user_notification_settings 
-                (id, user_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-            """, (settings_id, user_id, now, now))
-            await db.commit()
-        
-        return UserNotificationSettings(
-            id=settings_id,
-            user_id=user_id,
-            created_at=now,
-            updated_at=now
-        )
-    
-    async def update_notification_settings(self, user_id: str, **kwargs) -> bool:
-        """更新用户通知设置"""
-        async with aiosqlite.connect(self.db_path) as db:
-            # 检查设置是否存在
-            async with db.execute(
-                "SELECT id FROM user_notification_settings WHERE user_id = ?",
-                (user_id,)
-            ) as cursor:
-                existing = await cursor.fetchone()
-            
-            if not existing:
-                # 创建新设置
-                settings_id = str(int(datetime.now().timestamp() * 1000))
-                now = datetime.now().isoformat()
-                
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("""
                     INSERT INTO user_notification_settings 
                     (id, user_id, created_at, updated_at)
                     VALUES (?, ?, ?, ?)
                 """, (settings_id, user_id, now, now))
-            
-            # 构建更新语句
-            update_fields = []
-            values = []
-            
-            field_mapping = {
-                'enable_notifications': 'enable_notifications',
-                'notification_cooldown': 'notification_cooldown',
-                'max_daily_notifications': 'max_daily_notifications',
-                'quiet_hours_start': 'quiet_hours_start',
-                'quiet_hours_end': 'quiet_hours_end'
-            }
-            
-            for key, value in kwargs.items():
-                if key in field_mapping:
-                    update_fields.append(f"{field_mapping[key]} = ?")
-                    values.append(1 if key == 'enable_notifications' and value else value)
-            
-            if update_fields:
-                values.extend([datetime.now().isoformat(), user_id])
-                sql = f"""
-                    UPDATE user_notification_settings 
-                    SET {', '.join(update_fields)}, updated_at = ?
-                    WHERE user_id = ?
-                """
-                await db.execute(sql, values)
                 await db.commit()
-                return True
-        
-        return False
+            
+            # 返回字典格式的默认设置
+            return {
+                'id': settings_id,
+                'user_id': user_id,
+                'enable_notifications': True,
+                'notification_cooldown': 3600,
+                'max_daily_notifications': 10,
+                'quiet_hours_start': 23,
+                'quiet_hours_end': 7,
+                'last_notification_time': '',
+                'daily_notification_count': 0,
+                'notification_date': '',
+                'created_at': now,
+                'updated_at': now
+            }
+        except Exception as e:
+            self.logger.error(f"创建用户通知设置失败: {e}")
+            # 返回默认设置即使数据库操作失败
+            return {
+                'id': settings_id,
+                'user_id': user_id,
+                'enable_notifications': True,
+                'notification_cooldown': 3600,
+                'max_daily_notifications': 10,
+                'quiet_hours_start': 23,
+                'quiet_hours_end': 7,
+                'last_notification_time': '',
+                'daily_notification_count': 0,
+                'notification_date': '',
+                'created_at': now,
+                'updated_at': now
+            }
+    
+    async def update_notification_settings(self, user_id: str, **kwargs) -> bool:
+        """更新用户通知设置 - 修复版"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # 检查设置是否存在
+                async with db.execute(
+                    "SELECT id FROM user_notification_settings WHERE user_id = ?",
+                    (user_id,)
+                ) as cursor:
+                    existing = await cursor.fetchone()
+                
+                if not existing:
+                    # 创建新设置
+                    settings_id = str(int(datetime.now().timestamp() * 1000))
+                    now = datetime.now().isoformat()
+                    
+                    await db.execute("""
+                        INSERT INTO user_notification_settings 
+                        (id, user_id, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (settings_id, user_id, now, now))
+                
+                # 构建更新语句
+                update_fields = []
+                values = []
+                
+                field_mapping = {
+                    'enable_notifications': 'enable_notifications',
+                    'notification_cooldown': 'notification_cooldown',
+                    'max_daily_notifications': 'max_daily_notifications',
+                    'quiet_hours_start': 'quiet_hours_start',
+                    'quiet_hours_end': 'quiet_hours_end'
+                }
+                
+                for key, value in kwargs.items():
+                    if key in field_mapping:
+                        update_fields.append(f"{field_mapping[key]} = ?")
+                        # 处理布尔值
+                        if key == 'enable_notifications':
+                            values.append(1 if value else 0)
+                        else:
+                            values.append(value)
+                
+                if update_fields:
+                    values.extend([datetime.now().isoformat(), user_id])
+                    sql = f"""
+                        UPDATE user_notification_settings 
+                        SET {', '.join(update_fields)}, updated_at = ?
+                        WHERE user_id = ?
+                    """
+                    cursor = await db.execute(sql, values)
+                    await db.commit()
+                    
+                    if cursor.rowcount > 0:
+                        self.logger.info(f"用户 {user_id} 的通知设置已更新: {kwargs}")
+                        return True
+                    else:
+                        self.logger.warning(f"未找到用户 {user_id} 的通知设置")
+                        return False
+                else:
+                    self.logger.warning(f"没有有效的更新字段: {kwargs}")
+                    return False
+            
+        except Exception as e:
+            self.logger.error(f"更新通知设置失败: {e}")
+            return False
+    
+    async def update_user_notification_settings(self, user_id: str, settings_dict: dict) -> bool:
+        """更新用户通知设置 - 兼容性方法"""
+        return await self.update_notification_settings(user_id, **settings_dict)
     
     async def update_notification_record(self, user_id: str) -> None:
         """更新通知记录"""
@@ -862,72 +940,106 @@ class DatabaseManager:
             """, (now.isoformat(), today, user_id))
             await db.commit()
     
-    async def reset_daily_notification_count(self, user_id: str) -> None:
-        """重置每日通知计数"""
-        today = datetime.now().date().isoformat()
-        
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                UPDATE user_notification_settings 
-                SET daily_notification_count = 0,
-                    notification_date = ?
-                WHERE user_id = ?
-            """, (today, user_id))
-            await db.commit()
+    async def reset_daily_notification_count(self, user_id: str) -> bool:
+        """重置每日通知计数 - 修复版"""
+        try:
+            today = datetime.now().date().isoformat()
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
+                    UPDATE user_notification_settings 
+                    SET daily_notification_count = 0,
+                        notification_date = ?,
+                        updated_at = ?
+                    WHERE user_id = ?
+                """, (today, datetime.now().isoformat(), user_id))
+                await db.commit()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(f"用户 {user_id} 的每日通知计数已重置")
+                    return True
+                else:
+                    self.logger.warning(f"未找到用户 {user_id} 的通知设置")
+                    return False
+                    
+        except Exception as e:
+            self.logger.error(f"重置每日通知计数失败: {e}")
+            return False
     
     async def check_can_notify_user(self, user_id: str, item_id: str) -> bool:
-        """检查是否可以发送通知给用户"""
-        # 检查用户是否启用通知
-        user = await self.get_user(user_id)
-        if not user or not user.enable_notifications:
-            return False
-        
-        settings = await self.get_user_notification_settings(user_id)
-        
-        if not settings:
-            # 如果没有设置，创建默认设置
-            settings = await self.create_user_notification_settings(user_id)
-        
-        if not settings.enable_notifications:
-            return False
-        
-        # 检查免打扰时间
-        current_hour = datetime.now().hour
-        if settings.quiet_hours_start > settings.quiet_hours_end:
-            # 跨午夜的情况
-            if current_hour >= settings.quiet_hours_start or current_hour < settings.quiet_hours_end:
+        """检查是否可以发送通知给用户 - 修复版"""
+        try:
+            # 检查用户是否启用通知
+            user = await self.get_user(user_id)
+            if not user or not user.enable_notifications:
                 return False
-        else:
-            if settings.quiet_hours_start <= current_hour < settings.quiet_hours_end:
+            
+            settings = await self.get_user_notification_settings(user_id)
+            
+            if not settings:
+                # 如果没有设置，创建默认设置
+                settings = await self.create_user_notification_settings(user_id)
+            
+            if not settings.get('enable_notifications', True):
                 return False
-        
-        # 检查每日限制
-        today = datetime.now().date().isoformat()
-        if settings.notification_date != today:
-            await self.reset_daily_notification_count(user_id)
-            settings.daily_notification_count = 0
-        
-        if settings.daily_notification_count >= settings.max_daily_notifications:
-            return False
-        
-        # 检查该商品的冷却时间
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT notification_time 
-                FROM item_notification_history 
-                WHERE user_id = ? AND item_id = ?
-                ORDER BY notification_time DESC
-                LIMIT 1
-            """, (user_id, item_id)) as cursor:
-                row = await cursor.fetchone()
-                
-                if row:
-                    last_notification = datetime.fromisoformat(row[0])
-                    time_diff = (datetime.now() - last_notification).total_seconds()
-                    if time_diff < settings.notification_cooldown:
+            
+            # 检查免打扰时间
+            current_hour = datetime.now().hour
+            quiet_start = settings.get('quiet_hours_start', 23)
+            quiet_end = settings.get('quiet_hours_end', 7)
+            
+            # 如果免打扰时间设置为无效值（如25），表示关闭免打扰
+            if quiet_start < 24 and quiet_end < 24:
+                if quiet_start > quiet_end:
+                    # 跨午夜的情况
+                    if current_hour >= quiet_start or current_hour < quiet_end:
+                        self.logger.debug(f"用户 {user_id} 在免打扰时间内 ({quiet_start}:00-{quiet_end}:00)")
                         return False
-        
-        return True
+                else:
+                    if quiet_start <= current_hour < quiet_end:
+                        self.logger.debug(f"用户 {user_id} 在免打扰时间内 ({quiet_start}:00-{quiet_end}:00)")
+                        return False
+            
+            # 检查每日限制
+            today = datetime.now().date().isoformat()
+            notification_date = settings.get('notification_date', '')
+            daily_count = settings.get('daily_notification_count', 0)
+            max_daily = settings.get('max_daily_notifications', 10)
+            
+            if notification_date != today:
+                # 新的一天，重置计数
+                await self.reset_daily_notification_count(user_id)
+                daily_count = 0
+            
+            if daily_count >= max_daily:
+                self.logger.debug(f"用户 {user_id} 已达每日通知限制 ({daily_count}/{max_daily})")
+                return False
+            
+            # 检查该商品的冷却时间
+            cooldown_seconds = settings.get('notification_cooldown', 3600)
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT notification_time 
+                    FROM item_notification_history 
+                    WHERE user_id = ? AND item_id = ?
+                    ORDER BY notification_time DESC
+                    LIMIT 1
+                """, (user_id, item_id)) as cursor:
+                    row = await cursor.fetchone()
+                    
+                    if row:
+                        last_notification = datetime.fromisoformat(row[0])
+                        time_diff = (datetime.now() - last_notification).total_seconds()
+                        if time_diff < cooldown_seconds:
+                            self.logger.debug(f"商品 {item_id} 仍在冷却时间内，剩余 {cooldown_seconds - time_diff:.0f} 秒")
+                            return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"检查通知权限失败: {e}")
+            return False
     
     async def add_item_notification_history(self, user_id: str, item_id: str, status: bool) -> None:
         """添加商品通知历史记录"""
