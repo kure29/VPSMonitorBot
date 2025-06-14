@@ -530,23 +530,59 @@ test_multiuser_database() {
     cd "$work_dir"
     
     # 激活虚拟环境
-    source venv/bin/activate
+    if [[ -f "venv/bin/activate" ]]; then
+        source venv/bin/activate
+        log_debug "虚拟环境已激活"
+    fi
     
-    # 测试数据库操作
-    python3 -c "
+    # 🔧 关键修复：创建独立的测试脚本
+    if [[ ! -f "test_database.py" ]]; then
+        log_info "创建数据库测试脚本..."
+        
+        # 创建测试脚本（内容见上面的 test_database.py）
+        cat > test_database.py << 'EOF'
+#!/usr/bin/env python3
+"""数据库测试脚本"""
 import asyncio
 import sys
-sys.path.append('.')
-from database_manager import DatabaseManager
+import os
+import traceback
+from pathlib import Path
 
-async def test_multiuser_database():
+def setup_python_path():
+    current_dir = Path(__file__).parent
+    possible_paths = [
+        current_dir,
+        current_dir / "src",
+        current_dir.parent,
+        current_dir.parent / "src"
+    ]
+    
+    db_manager_path = None
+    for path in possible_paths:
+        if (path / "database_manager.py").exists():
+            db_manager_path = str(path)
+            break
+    
+    if not db_manager_path:
+        print("❌ 未找到 database_manager.py 文件")
+        return False
+    
+    if db_manager_path not in sys.path:
+        sys.path.insert(0, db_manager_path)
+    
+    print(f"✅ 找到数据库管理器: {db_manager_path}/database_manager.py")
+    return True
+
+async def test_database_functionality():
     try:
-        # 初始化数据库管理器
+        from database_manager import DatabaseManager
+        print("✅ database_manager模块导入成功")
+        
         db = DatabaseManager('test_multiuser_db.db')
         await db.initialize()
         print('✅ 多用户数据库初始化成功')
         
-        # 测试用户管理
         user = await db.add_or_update_user(
             user_id='test_user_123',
             username='testuser',
@@ -555,7 +591,6 @@ async def test_multiuser_database():
         )
         print(f'✅ 用户管理测试成功: {user.username}')
         
-        # 测试监控项管理
         item_id, success = await db.add_monitor_item(
             user_id='test_user_123',
             name='测试监控项',
@@ -569,81 +604,53 @@ async def test_multiuser_database():
             print('❌ 监控项管理测试失败')
             return False
         
-        # 测试统计功能
         stats = await db.get_user_statistics('test_user_123')
         print(f'✅ 统计功能测试成功')
         
-        # 清理测试数据
-        import os
         if os.path.exists('test_multiuser_db.db'):
             os.remove('test_multiuser_db.db')
             print('✅ 测试数据清理完成')
         
         return True
+        
     except Exception as e:
-        print(f'❌ 多用户数据库测试失败: {e}')
+        print(f'❌ 数据库测试失败: {e}')
+        traceback.print_exc()
         return False
 
-result = asyncio.run(test_multiuser_database())
-sys.exit(0 if result else 1)
-" || {
-    log_error "多用户数据库功能测试失败"
-    return 1
-}
-
-log_info "✅ 多用户数据库功能测试通过"
-}
-
-# 初始化多用户数据库
-init_multiuser_database() {
-    log_info "初始化多用户SQLite数据库"
+def main():
+    print("🔍 开始多用户数据库功能测试")
+    if not setup_python_path():
+        sys.exit(1)
     
-    local work_dir="$1"
-    cd "$work_dir"
-    
-    # 激活虚拟环境
-    source venv/bin/activate
-    
-    # 检查数据库管理器是否存在
-    if [[ ! -f "database_manager.py" ]]; then
-        log_error "未找到database_manager.py文件"
-        return 1
-    fi
-    
-    # 初始化数据库
-    log_info "创建多用户数据库表结构..."
-    python3 -c "
-import asyncio
-import sys
-from database_manager import DatabaseManager
-
-async def init_db():
     try:
-        db = DatabaseManager('vps_monitor.db')
-        await db.initialize()
-        print('✅ 多用户数据库初始化成功')
-        return True
+        result = asyncio.run(test_database_functionality())
+        sys.exit(0 if result else 1)
     except Exception as e:
-        print(f'❌ 多用户数据库初始化失败: {e}')
-        return False
+        print(f"❌ 测试执行出错: {e}")
+        sys.exit(1)
 
-result = asyncio.run(init_db())
-sys.exit(0 if result else 1)
-" || {
-        log_error "多用户数据库初始化失败"
-        return 1
-    }
+if __name__ == "__main__":
+    main()
+EOF
+        
+        chmod +x test_database.py
+        log_info "测试脚本创建完成"
+    fi
     
-    # 检查数据库文件
-    if [[ -f "vps_monitor.db" ]]; then
-        local db_size=$(du -h vps_monitor.db | cut -f1)
-        log_info "多用户数据库文件创建成功，大小: $db_size"
+    # 🔧 关键修复：运行独立的测试脚本
+    log_info "运行数据库测试..."
+    if python3 test_database.py; then
+        log_info "✅ 多用户数据库功能测试通过"
+        # 清理测试脚本
+        rm -f test_database.py
+        return 0
     else
-        log_error "数据库文件创建失败"
+        log_error "❌ 多用户数据库功能测试失败"
+        log_info "测试脚本保留在 test_database.py，可手动运行调试"
         return 1
     fi
 }
-
 # 交互式配置Telegram信息（多用户版）
 configure_telegram_multiuser() {
     log_info "配置Telegram信息（多用户版）"
