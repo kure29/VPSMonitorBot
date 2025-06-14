@@ -330,6 +330,200 @@ class TelegramBot:
         else:
             await message_or_query.reply_text(text, reply_markup=reply_markup)
     
+    async def _show_item_detail(self, query, item_id: str, user_info: User, edit_message: bool = True) -> None:
+        """显示监控项详情"""
+        try:
+            # 获取监控项信息
+            items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
+            item = items.get(item_id)
+            
+            if not item:
+                await query.answer("监控项不存在", show_alert=True)
+                return
+            
+            # 检查权限
+            can_edit = (item.user_id == user_info.id) or self._check_admin_permission(user_info.id)
+            
+            # 格式化创建时间和最后检查时间
+            created_date = item.created_at.split('T')[0] if item.created_at else '未知'
+            last_checked = item.last_checked.split('T')[0] if item.last_checked else '从未'
+            
+            # 状态显示
+            if item.status is True:
+                status_text = "🟢 有货"
+            elif item.status is False:
+                status_text = "🔴 无货"
+            else:
+                status_text = "⚪ 未知"
+            
+            enabled_text = "✅ 已启用" if item.enabled else "❌ 已禁用"
+            global_text = "🌐 全局监控" if item.is_global else "👤 个人监控"
+            
+            # 成功率计算
+            total_checks = item.success_count + item.failure_count
+            success_rate = f"{(item.success_count / total_checks * 100):.1f}%" if total_checks > 0 else "暂无数据"
+            
+            text = (
+                f"📊 **监控项详情**\n\n"
+                f"📝 **名称:** {item.name}\n"
+                f"🔗 **链接:** `{item.url}`\n"
+                f"🆔 **ID:** {item.id}\n\n"
+                
+                f"📈 **状态信息:**\n"
+                f"• 当前状态: {status_text}\n"
+                f"• 启用状态: {enabled_text}\n"
+                f"• 监控类型: {global_text}\n\n"
+                
+                f"📊 **统计信息:**\n"
+                f"• 成功率: {success_rate}\n"
+                f"• 成功次数: {item.success_count}\n"
+                f"• 失败次数: {item.failure_count}\n"
+                f"• 通知次数: {item.notification_count}\n\n"
+                
+                f"📅 **时间信息:**\n"
+                f"• 创建时间: {created_date}\n"
+                f"• 最后检查: {last_checked}\n"
+            )
+            
+            if item.config:
+                text += f"\n⚙️ **配置信息:** {item.config}\n"
+            
+            if item.last_error:
+                text += f"\n❌ **最后错误:** {item.last_error[:100]}...\n"
+            
+            # 构建按钮
+            keyboard = []
+            
+            # 第一行：操作按钮
+            if can_edit:
+                action_buttons = []
+                if item.enabled:
+                    action_buttons.append(InlineKeyboardButton("🔴 禁用", callback_data=f'toggle_item_{item_id}'))
+                else:
+                    action_buttons.append(InlineKeyboardButton("🟢 启用", callback_data=f'toggle_item_{item_id}'))
+                
+                action_buttons.append(InlineKeyboardButton("🗑️ 删除", callback_data=f'delete_item_{item_id}'))
+                keyboard.append(action_buttons)
+            
+            # 第二行：其他按钮
+            keyboard.append([
+                InlineKeyboardButton("🔍 调试分析", callback_data=f'debug_item_{item_id}'),
+                InlineKeyboardButton("📋 复制链接", callback_data=f'copy_url_{item_id}')
+            ])
+            
+            # 返回按钮
+            keyboard.append([
+                InlineKeyboardButton("🔙 返回列表", callback_data=f'list_items_{user_info.id}_0')
+            ])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+        except Exception as e:
+            self.logger.error(f"显示监控项详情失败: {e}")
+            await query.answer("加载详情失败，请重试", show_alert=True)
+    
+    
+    async def _confirm_delete_item(self, query, item_id: str, user_info: User, edit_message: bool = True) -> None:
+        """确认删除监控项"""
+        try:
+            items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
+            item = items.get(item_id)
+            
+            if not item:
+                await query.answer("监控项不存在", show_alert=True)
+                return
+            
+            # 检查权限
+            can_delete = (item.user_id == user_info.id) or self._check_admin_permission(user_info.id)
+            if not can_delete:
+                await query.answer("您没有权限删除此监控项", show_alert=True)
+                return
+            
+            text = (
+                f"⚠️ **确认删除**\n\n"
+                f"您确定要删除以下监控项吗？\n\n"
+                f"📝 名称: {item.name}\n"
+                f"🔗 链接: `{item.url}`\n\n"
+                f"**此操作不可恢复！**"
+            )
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ 确认删除", callback_data=f'confirm_delete_{item_id}'),
+                    InlineKeyboardButton("❌ 取消", callback_data=f'item_detail_{item_id}')
+                ]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+        except Exception as e:
+            self.logger.error(f"确认删除失败: {e}")
+            await query.answer("操作失败，请重试", show_alert=True)
+    
+    
+    async def _delete_item(self, query, item_id: str, user_info: User) -> None:
+        """删除监控项"""
+        try:
+            # 检查权限
+            is_admin = self._check_admin_permission(user_info.id)
+            
+            # 删除监控项
+            success = await self.db_manager.remove_monitor_item(item_id, user_info.id, is_admin)
+            
+            if success:
+                await query.answer("✅ 监控项已删除", show_alert=True)
+                # 返回监控列表
+                await self._show_monitor_list(query, user_info.id, 0, edit_message=True)
+            else:
+                await query.answer("❌ 删除失败，请重试", show_alert=True)
+                
+        except Exception as e:
+            self.logger.error(f"删除监控项失败: {e}")
+            await query.answer("删除失败，请重试", show_alert=True)
+    
+    
+    async def _toggle_item_status(self, query, item_id: str, user_info: User) -> None:
+        """切换监控项启用状态"""
+        try:
+            items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
+            item = items.get(item_id)
+            
+            if not item:
+                await query.answer("监控项不存在", show_alert=True)
+                return
+            
+            # 检查权限
+            can_edit = (item.user_id == user_info.id) or self._check_admin_permission(user_info.id)
+            if not can_edit:
+                await query.answer("您没有权限修改此监控项", show_alert=True)
+                return
+            
+            # 切换状态
+            new_status = not item.enabled
+            success = await self.db_manager.update_monitor_item_status(item_id, new_status)
+            
+            if success:
+                status_text = "启用" if new_status else "禁用"
+                await query.answer(f"✅ 监控项已{status_text}", show_alert=True)
+                # 刷新详情页面
+                await self._show_item_detail(query, item_id, user_info, edit_message=True)
+            else:
+                await query.answer("❌ 操作失败，请重试", show_alert=True)
+                
+        except Exception as e:
+            self.logger.error(f"切换监控项状态失败: {e}")
+            await query.answer("操作失败，请重试", show_alert=True)
+
     async def _show_admin_panel(self, message_or_query, edit_message: bool = False) -> None:
         """显示管理员面板"""
         # 获取全局统计
