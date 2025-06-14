@@ -65,7 +65,32 @@ class CheckHistory:
     confidence: float = 0.0
     method_used: str = ""
 
+@dataclass
+class UserNotificationSettings:
+    """用户通知设置数据类"""
+    id: str
+    user_id: str
+    enable_notifications: bool = True
+    notification_cooldown: int = 3600  # 秒
+    max_daily_notifications: int = 10
+    quiet_hours_start: int = 23
+    quiet_hours_end: int = 7
+    last_notification_time: str = ""
+    daily_notification_count: int = 0
+    notification_date: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
+
+@dataclass
+class ItemNotificationHistory:
+    """商品通知历史数据类"""
+    id: str
+    user_id: str
+    item_id: str
+    notification_time: str
+    status: bool  # True=有货，False=缺货
+    
 class DatabaseManager:
     """多用户数据库管理器"""
     
