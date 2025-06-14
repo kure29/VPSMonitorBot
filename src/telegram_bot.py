@@ -427,7 +427,6 @@ class TelegramBot:
             self.logger.error(f"显示监控项详情失败: {e}")
             await query.answer("加载详情失败，请重试", show_alert=True)
     
-    
     async def _confirm_delete_item(self, query, item_id: str, user_info: User, edit_message: bool = True) -> None:
         """确认删除监控项"""
         try:
@@ -470,7 +469,6 @@ class TelegramBot:
             self.logger.error(f"确认删除失败: {e}")
             await query.answer("操作失败，请重试", show_alert=True)
     
-    
     async def _delete_item(self, query, item_id: str, user_info: User) -> None:
         """删除监控项"""
         try:
@@ -490,7 +488,6 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"删除监控项失败: {e}")
             await query.answer("删除失败，请重试", show_alert=True)
-    
     
     async def _toggle_item_status(self, query, item_id: str, user_info: User) -> None:
         """切换监控项启用状态"""
@@ -841,6 +838,7 @@ class TelegramBot:
                 target_user_id = parts[2]
                 page = int(parts[3])
                 await self._show_monitor_list(query, target_user_id, page, edit_message=True)
+            
             elif data.startswith('item_detail_'):
                 item_id = data.replace('item_detail_', '')
                 await self._show_item_detail(query, item_id, user_info, edit_message=True)
@@ -856,6 +854,7 @@ class TelegramBot:
             elif data.startswith('toggle_item_'):
                 item_id = data.replace('toggle_item_', '')
                 await self._toggle_item_status(query, item_id, user_info)
+            
             elif data.startswith('debug_item_'):
                 item_id = data.replace('debug_item_', '')
                 items = await self.db_manager.get_monitor_items(user_id=user_info.id, enabled_only=False, include_global=True)
@@ -874,6 +873,7 @@ class TelegramBot:
                     await query.answer(f"请手动复制链接：{item.url}", show_alert=True)
                 else:
                     await query.answer("监控项不存在", show_alert=True)
+            
             elif data == 'my_stats':
                 await query.edit_message_text("📊 正在加载统计信息...")
                 await self._show_user_statistics(query.message, user_info.id)
@@ -1008,7 +1008,7 @@ class TelegramBot:
             elif data.startswith('toggle_ban_'):
                 if self._check_admin_permission(user_info.id):
                     target_user_id = data.replace('toggle_ban_', '')
-                    await self._toggle_user_ban(query, target_user_id)
+                    await self._toggle_user_ban(query, target_user_id, user_info)
                 else:
                     await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
@@ -1158,7 +1158,7 @@ class TelegramBot:
             self.logger.error(f"显示用户详情失败: {e}")
             await query.answer("加载用户详情失败", show_alert=True)
     
-    async def _toggle_user_ban(self, query, user_id: str) -> None:
+    async def _toggle_user_ban(self, query, user_id: str, admin_info: User) -> None:
         """切换用户封禁状态"""
         try:
             user = await self.db_manager.get_user(user_id)
@@ -1168,7 +1168,7 @@ class TelegramBot:
             
             # 切换封禁状态
             new_status = not user.is_banned
-            success = await self.db_manager.ban_user(user_id, new_status, admin_user_id=user_info.id)
+            success = await self.db_manager.ban_user(user_id, new_status, admin_user_id=admin_info.id)
             
             if success:
                 action = "封禁" if new_status else "解封"
