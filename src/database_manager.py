@@ -342,7 +342,28 @@ class DatabaseManager:
                 await self._log_user_action(admin_user_id, "admin_ban_user", action_data)
                 return True
         return False
-    
+    async def update_user_ban_status(self, user_id: str, is_banned: bool) -> bool:
+    """更新用户封禁状态（简化版本，供 telegram_bot 调用）"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE users SET is_banned = ? WHERE id = ?",
+                (1 if is_banned else 0, user_id)
+            )
+            await db.commit()
+            
+            if cursor.rowcount > 0:
+                # 记录操作日志
+                action_data = f"用户封禁状态更新: {'封禁' if is_banned else '解封'}"
+                await self._log_user_action("system", "update_ban_status", action_data)
+                return True
+            else:
+                self.logger.warning(f"未找到用户 {user_id}")
+                return False
+                
+    except Exception as e:
+        self.logger.error(f"更新用户封禁状态失败: {e}")
+        return False
     async def get_all_users(self, include_banned: bool = False) -> List[User]:
         """获取所有用户"""
         users = []
