@@ -1,5 +1,5 @@
 {
-  "_comment": "VPS监控系统 v3.0 配置文件 - 多用户智能监控版",
+  "_comment": "VPS监控系统 v3.1 配置文件 - 多用户智能监控版",
   "_author": "kure29",
   "_website": "https://kure29.com",
   
@@ -19,6 +19,13 @@
   "notification_cooldown": 600,
   "request_timeout": 30,
   "retry_delay": 60,
+  
+  "_notification_comment": "用户通知配置",
+  "user_notification_enabled": true,
+  "default_user_cooldown": 3600,
+  "default_daily_limit": 10,
+  "default_quiet_hours_start": 23,
+  "default_quiet_hours_end": 7,
   
   "_display_comment": "显示相关配置",
   "items_per_page": 10,
@@ -61,6 +68,13 @@
       "• 库存变化通知会发送给admin_ids中的管理员",
       "• 每个用户有每日添加限制（daily_add_limit）",
       "• 系统会记录用户行为和统计信息"
+    ],
+    "用户通知功能": [
+      "• 用户可以接收自己监控商品的有货通知",
+      "• 支持设置通知冷却时间，避免频繁打扰",
+      "• 支持设置每日通知限制",
+      "• 支持设置免打扰时间段",
+      "• 用户可以随时开关通知功能"
     ],
     "智能算法说明": [
       "• DOM检测：使用Selenium分析页面元素",
