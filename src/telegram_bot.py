@@ -235,6 +235,9 @@ class TelegramBot:
             ],
             [
                 InlineKeyboardButton("📈 我的统计", callback_data='my_stats'),
+                InlineKeyboardButton("🔔 通知设置", callback_data='notification_settings')  # 新增
+            ],
+            [
                 InlineKeyboardButton("❓ 帮助", callback_data='help')
             ]
         ]
