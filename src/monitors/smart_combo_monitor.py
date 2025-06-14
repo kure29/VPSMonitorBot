@@ -9,7 +9,7 @@ import asyncio
 import logging
 import cloudscraper
 from datetime import datetime
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from config import Config
 from .fingerprint_monitor import PageFingerprintMonitor
 from .dom_monitor import DOMElementMonitor
@@ -103,8 +103,8 @@ class SmartComboMonitor:
                     'message': fp_message
                 }
                 
-                # 简单关键词检查作为基准
-                keyword_result = self._basic_keyword_check(html_content)
+                # 改进的关键词检查
+                keyword_result = self._advanced_keyword_check(html_content)
                 results['methods']['keywords'] = keyword_result
                 
         except Exception as e:
@@ -141,37 +141,180 @@ class SmartComboMonitor:
         
         return results
     
-    def _basic_keyword_check(self, content: str) -> Dict:
-        """基础关键词检查"""
+    def _advanced_keyword_check(self, content: str) -> Dict:
+        """改进的关键词检查，支持权重和优先级"""
         content_lower = content.lower()
         
-        # 扩展的关键词列表
-        out_of_stock_keywords = [
-            'sold out', 'out of stock', '缺货', '售罄', '补货中', '缺货中',
-            'currently unavailable', 'not available', '暂时缺货',
-            'temporarily out of stock', '已售完', '库存不足',
-            'out-of-stock', 'unavailable', '无货', '断货',
-            'not in stock', 'no stock', '无库存', 'stock: 0',
-            '刷新库存', '库存刷新', '暂无库存', '等待补货'
+        # 高优先级的缺货关键词（权重更高）
+        high_priority_out_of_stock = [
+            ('sold out', 1.0),
+            ('out of stock', 1.0),
+            ('缺货', 1.0),
+            ('售罄', 1.0),
+            ('currently unavailable', 0.9),
+            ('not available', 0.9),
+            ('暂时缺货', 0.9),
+            ('temporarily out of stock', 0.9),
+            ('已售完', 0.9),
+            ('out-of-stock', 0.9),
+            ('unavailable', 0.8),
+            ('无货', 0.9),
+            ('断货', 0.9),
+            ('not in stock', 0.9),
+            ('no stock', 0.9),
+            ('无库存', 0.9),
+            ('stock: 0', 1.0),
+            ('库存: 0', 1.0),
+            ('暂无库存', 0.9),
+            ('等待补货', 0.8)
         ]
         
+        # 中低优先级的缺货关键词
+        low_priority_out_of_stock = [
+            ('补货中', 0.7),
+            ('缺货中', 0.7),
+            ('库存不足', 0.6),
+            ('刷新库存', 0.5),
+            ('库存刷新', 0.5)
+        ]
+        
+        # 有货关键词（带权重）
         in_stock_keywords = [
-            'add to cart', 'buy now', '立即购买', '加入购物车',
-            'in stock', '有货', '现货', 'available', 'order now',
-            'purchase', 'checkout', '订购', '下单', '继续', '繼續',
-            'configure', 'select options', 'configure now', 'continue',
-            '立即订购', '马上购买', '选择配置'
+            ('add to cart', 0.8),
+            ('buy now', 0.8),
+            ('立即购买', 0.8),
+            ('加入购物车', 0.8),
+            ('in stock', 0.9),
+            ('有货', 0.9),
+            ('现货', 0.9),
+            ('available', 0.7),
+            ('order now', 0.8),
+            ('purchase', 0.6),
+            ('checkout', 0.6),
+            ('订购', 0.7),
+            ('下单', 0.7),
+            ('continue', 0.4),  # 降低continue的权重
+            ('繼續', 0.4),
+            ('configure', 0.5),
+            ('select options', 0.5),
+            ('configure now', 0.5),
+            ('create', 0.3),  # create权重很低
+            ('立即订购', 0.8),
+            ('马上购买', 0.8),
+            ('选择配置', 0.6)
         ]
         
-        out_count = sum(1 for keyword in out_of_stock_keywords if keyword in content_lower)
-        in_count = sum(1 for keyword in in_stock_keywords if keyword in content_lower)
+        # 上下文排除词（如果这些词出现在关键词附近，降低权重）
+        context_exclusions = ['disabled', 'false', 'unavailable', '不可用', '已禁用', 'grayed out']
         
-        if out_count > in_count and out_count > 0:
-            return {'status': False, 'confidence': 0.7, 'out_count': out_count, 'in_count': in_count}
-        elif in_count > out_count and in_count > 0:
-            return {'status': True, 'confidence': 0.7, 'out_count': out_count, 'in_count': in_count}
+        # 计算缺货得分
+        out_of_stock_score = 0
+        out_keywords_found = []
+        
+        for keyword, weight in high_priority_out_of_stock + low_priority_out_of_stock:
+            if keyword in content_lower:
+                # 检查上下文
+                context_penalty = self._check_context(content_lower, keyword, context_exclusions)
+                actual_weight = weight * (1 - context_penalty)
+                out_of_stock_score += actual_weight
+                out_keywords_found.append((keyword, actual_weight))
+        
+        # 计算有货得分
+        in_stock_score = 0
+        in_keywords_found = []
+        
+        for keyword, weight in in_stock_keywords:
+            if keyword in content_lower:
+                # 检查上下文
+                context_penalty = self._check_context(content_lower, keyword, context_exclusions)
+                actual_weight = weight * (1 - context_penalty)
+                in_stock_score += actual_weight
+                in_keywords_found.append((keyword, actual_weight))
+        
+        # 特殊规则：如果同时存在高优先级缺货关键词，直接判断为缺货
+        high_priority_out_found = any(
+            keyword in content_lower 
+            for keyword, _ in high_priority_out_of_stock
+        )
+        
+        if high_priority_out_found:
+            # 即使有"create"等关键词，也优先判断为缺货
+            return {
+                'status': False,
+                'confidence': min(0.9, out_of_stock_score / max(out_of_stock_score + in_stock_score, 1)),
+                'out_score': out_of_stock_score,
+                'in_score': in_stock_score,
+                'out_keywords': out_keywords_found,
+                'in_keywords': in_keywords_found,
+                'reason': 'high_priority_out_of_stock_found'
+            }
+        
+        # 综合判断
+        total_score = out_of_stock_score + in_stock_score
+        
+        if total_score == 0:
+            return {
+                'status': None,
+                'confidence': 0.0,
+                'out_score': 0,
+                'in_score': 0,
+                'reason': 'no_keywords_found'
+            }
+        
+        # 计算置信度
+        score_diff = abs(out_of_stock_score - in_stock_score)
+        confidence = min(0.9, score_diff / total_score)
+        
+        # 如果缺货得分明显高于有货得分
+        if out_of_stock_score > in_stock_score * 1.2:  # 1.2倍阈值
+            return {
+                'status': False,
+                'confidence': confidence,
+                'out_score': out_of_stock_score,
+                'in_score': in_stock_score,
+                'out_keywords': out_keywords_found,
+                'in_keywords': in_keywords_found,
+                'reason': 'out_score_higher'
+            }
+        elif in_stock_score > out_of_stock_score * 1.5:  # 有货需要更高的阈值
+            return {
+                'status': True,
+                'confidence': confidence,
+                'out_score': out_of_stock_score,
+                'in_score': in_stock_score,
+                'out_keywords': out_keywords_found,
+                'in_keywords': in_keywords_found,
+                'reason': 'in_score_higher'
+            }
         else:
-            return {'status': None, 'confidence': 0.3, 'out_count': out_count, 'in_count': in_count}
+            # 分数接近时，倾向于判断为缺货（保守策略）
+            return {
+                'status': False,
+                'confidence': confidence * 0.5,  # 降低置信度
+                'out_score': out_of_stock_score,
+                'in_score': in_stock_score,
+                'out_keywords': out_keywords_found,
+                'in_keywords': in_keywords_found,
+                'reason': 'scores_close_default_out'
+            }
+    
+    def _check_context(self, content: str, keyword: str, exclusions: List[str]) -> float:
+        """检查关键词的上下文，返回惩罚系数（0-1）"""
+        keyword_pos = content.find(keyword)
+        if keyword_pos == -1:
+            return 0
+        
+        # 检查关键词前后50个字符
+        start = max(0, keyword_pos - 50)
+        end = min(len(content), keyword_pos + len(keyword) + 50)
+        context = content[start:end]
+        
+        # 如果上下文中包含排除词，返回惩罚
+        for exclusion in exclusions:
+            if exclusion in context:
+                return 0.5  # 50%惩罚
+        
+        return 0
     
     def _make_final_decision(self, methods: Dict) -> Tuple[Optional[bool], float]:
         """基于多种方法的结果做出最终判断"""
@@ -192,42 +335,62 @@ class SmartComboMonitor:
                 votes.append(status)
                 confidence_scores.append(0.8)
         
-        # 关键词检查
+        # 改进的关键词检查
         if 'keywords' in methods and 'status' in methods['keywords']:
             status = methods['keywords']['status']
             if status is not None:
+                # 如果是因为高优先级缺货关键词而判断的，提高权重
+                if methods['keywords'].get('reason') == 'high_priority_out_of_stock_found':
+                    confidence_scores.append(0.85)
+                else:
+                    confidence_scores.append(methods['keywords'].get('confidence', 0.5))
                 votes.append(status)
-                confidence_scores.append(methods['keywords'].get('confidence', 0.5))
         
         # 页面变化检测
-        changes_detected = 0
         if methods.get('fingerprint', {}).get('changed'):
-            changes_detected += 1
-        
-        if changes_detected > 0:
-            confidence_scores.append(0.3)
+            # 页面变化只是辅助信号，不直接参与投票
+            confidence_scores.append(0.2)
         
         if not votes:
             return None, 0.0
         
-        # 投票决定
-        true_votes = sum(votes)
-        total_votes = len(votes)
+        # 特殊规则：如果关键词检查发现高优先级缺货词，且没有其他方法明确说有货
+        if ('keywords' in methods and 
+            methods['keywords'].get('reason') == 'high_priority_out_of_stock_found' and
+            methods['keywords'].get('status') is False):
+            
+            # 检查是否有其他方法明确说有货
+            other_in_stock = any(
+                vote for i, vote in enumerate(votes)
+                if vote and i < len(confidence_scores) and confidence_scores[i] > 0.8
+            )
+            
+            if not other_in_stock:
+                # 直接返回缺货
+                return False, 0.85
         
-        if true_votes > total_votes / 2:
+        # 加权投票
+        weighted_sum = sum(
+            (1 if vote else -1) * confidence
+            for vote, confidence in zip(votes, confidence_scores[:len(votes)])
+        )
+        
+        total_confidence = sum(confidence_scores[:len(votes)])
+        
+        if weighted_sum > 0:
             final_status = True
-        elif true_votes < total_votes / 2:
+        elif weighted_sum < 0:
             final_status = False
         else:
-            # 平票时，倾向于保守判断（无货）
+            # 平票时，倾向于保守判断（缺货）
             final_status = False
         
-        # 计算置信度
-        if confidence_scores:
-            avg_confidence = sum(confidence_scores) / len(confidence_scores)
-            # 如果投票一致性高，提高置信度
-            vote_consistency = abs(true_votes - (total_votes - true_votes)) / total_votes
-            final_confidence = min(avg_confidence * (0.5 + 0.5 * vote_consistency), 1.0)
+        # 计算最终置信度
+        if total_confidence > 0:
+            final_confidence = abs(weighted_sum) / total_confidence
+            # 根据投票一致性调整置信度
+            vote_consistency = sum(1 for v in votes if v == final_status) / len(votes)
+            final_confidence = min(final_confidence * (0.5 + 0.5 * vote_consistency), 0.95)
         else:
             final_confidence = 0.0
         
