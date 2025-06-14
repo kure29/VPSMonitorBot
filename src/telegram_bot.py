@@ -3,7 +3,8 @@
 Telegram机器人模块
 VPS监控系统 v3.1
 """
-
+import psutil
+import os
 import re
 import logging
 import asyncio
@@ -628,9 +629,76 @@ class TelegramBot:
             elif data == 'help':
                 await self._help_command(update, context)
             
-            elif data == 'admin_panel':
+elif data == 'admin_panel':
                 if self._check_admin_permission(user_info.id):
-                    await self._show_admin_panel(query, user_info.id, edit_message=True)
+                    await self._show_admin_panel(query, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            # 处理管理员面板的子菜单
+            elif data == 'admin_users':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_admin_users(query, 0, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data == 'admin_monitors':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_admin_monitors(query, 0, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data == 'admin_stats':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_admin_detailed_stats(query, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data == 'admin_system_status':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_system_status(query, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data == 'admin_debug':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_admin_debug_tools(query, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data == 'admin_config':
+                if self._check_admin_permission(user_info.id):
+                    await self._show_admin_config(query, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            # 处理管理员分页
+            elif data.startswith('admin_users_page_'):
+                if self._check_admin_permission(user_info.id):
+                    page = int(data.split('_')[3])
+                    await self._show_admin_users(query, page, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data.startswith('admin_monitors_page_'):
+                if self._check_admin_permission(user_info.id):
+                    page = int(data.split('_')[3])
+                    await self._show_admin_monitors(query, page, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            # 处理管理员操作
+            elif data == 'admin_cleanup':
+                if self._check_admin_permission(user_info.id):
+                    cleanup_stats = await self.db_manager.cleanup_old_data(90)
+                    await query.answer(f"清理完成！删除了 {sum(cleanup_stats.values())} 条旧记录", show_alert=True)
+                    await self._show_admin_debug_tools(query, edit_message=True)
+                else:
+                    await query.answer("您没有管理员权限")
+            
+            elif data == 'admin_export_logs':
+                if self._check_admin_permission(user_info.id):
+                    await query.answer("日志导出功能开发中...", show_alert=True)
                 else:
                     await query.answer("您没有管理员权限")
             
