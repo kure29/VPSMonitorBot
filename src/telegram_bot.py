@@ -1560,3 +1560,33 @@ class TelegramBot:
                 self.logger.info("Telegram Bot已关闭")
         except Exception as e:
             self.logger.error(f"关闭机器人失败: {e}")
+
+
+
+    async def _show_notification_settings(self, message_or_query, user_id: str, edit_message: bool = True) -> None:
+        """显示通知设置"""
+        settings = await self.db_manager.get_user_notification_settings(user_id)
+
+        if not settings:
+            settings = await self.db_manager.create_user_notification_settings(user_id)
+
+        status = "✅ 已启用" if settings.enable_notifications else "❌ 已禁用"
+        text = (
+            "🔔 **通知设置**\n\n"
+            f"**当前状态:** {status}\n\n"
+            f"**通知规则:**\n"
+            f"• 冷却时间: {settings.notification_cooldown // 60} 分钟\n"
+            f"• 每日限制: {settings.max_daily_notifications} 条\n"
+            f"• 免打扰时间: {settings.quiet_hours_start}:00 - {settings.quiet_hours_end}:00\n"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("切换启用状态", callback_data=f"toggle_notifications_{user_id}")],
+            [InlineKeyboardButton("返回菜单", callback_data=f"menu_{user_id}")]
+        ]
+
+        markup = InlineKeyboardMarkup(keyboard)
+        if edit_message and hasattr(message_or_query, "edit_message_text"):
+            await message_or_query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        else:
+            await message_or_query.reply_text(text, reply_markup=markup, parse_mode="Markdown")
