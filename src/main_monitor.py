@@ -354,21 +354,3 @@ class VPSMonitor:
             await self.telegram_bot.shutdown()
         self.logger.info("监控程序已停止")
         print("✅ 监控程序已停止")
-
-
-class UserNotificationSettings(Base):
-    """用户通知设置"""
-    __tablename__ = "user_notification_settings"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, ForeignKey('users.id'), nullable=False, unique=True)
-    enable_notifications = Column(Boolean, default=True)
-    notification_cooldown = Column(Integer, default=3600)
-    max_daily_notifications = Column(Integer, default=10)
-    quiet_hours_start = Column(Integer, default=23)
-    quiet_hours_end = Column(Integer, default=7)
-    last_notification_time = Column(DateTime)
-    daily_notification_count = Column(Integer, default=0)
-    notification_date = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
