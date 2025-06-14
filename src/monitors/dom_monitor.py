@@ -104,21 +104,44 @@ class DOMElementMonitor:
             except ImportError:
                 pass
             
-            # 通用检查逻辑
-            # 检查购买按钮
-            buy_buttons = self._find_buy_buttons()
-            if buy_buttons['enabled_count'] > 0:
-                return True, f"发现{buy_buttons['enabled_count']}个可用购买按钮", check_info
+            # 通用检查逻辑 - 改进顺序，先检查缺货标识
             
-            # 检查库存文本
+            # 优先检查缺货文本
             stock_info = self._check_stock_text()
-            if stock_info['definitive']:
-                return stock_info['status'], stock_info['message'], check_info
+            if stock_info['definitive'] and stock_info['status'] is False:
+                # 如果明确显示缺货，直接返回
+                return False, stock_info['message'], check_info
             
-            # 检查价格信息
-            price_info = self._check_price_elements()
-            if price_info['has_price'] and price_info['has_form']:
-                return True, f"发现价格信息和订单表单", check_info
+            # 检查页面标题是否包含缺货信息
+            title_check = self._check_page_title()
+            if title_check['is_out_of_stock']:
+                return False, title_check['message'], check_info
+            
+            # 只有在没有发现明确缺货标识的情况下，才检查购买按钮
+            buy_buttons = self._find_buy_buttons()
+            
+            # 如果有明确的有货文本
+            if stock_info['definitive'] and stock_info['status'] is True:
+                # 并且有可用的购买按钮
+                if buy_buttons['enabled_count'] > 0:
+                    return True, f"发现有货文本和{buy_buttons['enabled_count']}个可用购买按钮", check_info
+            
+            # 如果只有购买按钮，没有其他明确标识，需要更谨慎
+            if buy_buttons['enabled_count'] > 0 and buy_buttons['disabled_count'] == 0:
+                # 检查是否是通用导航按钮
+                if not self._is_generic_navigation_button():
+                    # 检查价格信息
+                    price_info = self._check_price_elements()
+                    if price_info['has_price'] and price_info['has_form']:
+                        return True, f"发现价格信息、订单表单和{buy_buttons['enabled_count']}个购买按钮", check_info
+                    elif price_info['has_price']:
+                        return None, f"发现价格和按钮但无明确库存信息", check_info
+                else:
+                    return None, "发现的可能是导航按钮而非购买按钮", check_info
+            
+            # 如果按钮被禁用
+            if buy_buttons['disabled_count'] > 0 and buy_buttons['enabled_count'] == 0:
+                return False, f"发现{buy_buttons['disabled_count']}个被禁用的购买按钮", check_info
             
             return None, "DOM检查无法确定库存状态", check_info
             
@@ -126,22 +149,88 @@ class DOMElementMonitor:
             self.logger.error(f"DOM检查失败: {e}")
             return None, f"DOM检查失败: {str(e)}", {}
     
+    def _check_page_title(self) -> Dict:
+        """检查页面标题中的库存信息"""
+        try:
+            title = self.driver.title.lower()
+            
+            out_of_stock_keywords = [
+                'out of stock', 'sold out', '缺货', '售罄',
+                'unavailable', '无货', '断货'
+            ]
+            
+            for keyword in out_of_stock_keywords:
+                if keyword in title:
+                    return {
+                        'is_out_of_stock': True,
+                        'message': f'页面标题显示缺货: {self.driver.title}'
+                    }
+            
+            return {
+                'is_out_of_stock': False,
+                'message': ''
+            }
+        except:
+            return {
+                'is_out_of_stock': False,
+                'message': ''
+            }
+    
+    def _is_generic_navigation_button(self) -> bool:
+        """检查是否是通用导航按钮（如Create账户按钮）"""
+        try:
+            # 检查是否在导航栏、侧边栏或头部
+            nav_selectors = [
+                "nav", "header", ".nav", ".navbar", ".sidebar", 
+                ".menu", "[role='navigation']", ".navigation"
+            ]
+            
+            for nav_selector in nav_selectors:
+                nav_elements = self.driver.find_elements(By.CSS_SELECTOR, nav_selector)
+                for nav in nav_elements:
+                    # 检查导航区域内是否有Create等按钮
+                    buttons_in_nav = nav.find_elements(By.TAG_NAME, "button")
+                    links_in_nav = nav.find_elements(By.TAG_NAME, "a")
+                    
+                    for element in buttons_in_nav + links_in_nav:
+                        text = element.text.lower()
+                        if any(word in text for word in ['create', 'login', 'register', 'account']):
+                            return True
+            
+            # 检查URL是否包含特定路径
+            current_url = self.driver.current_url.lower()
+            if any(path in current_url for path in ['/cart', '/basket', '/checkout']):
+                # 在购物车页面，Create可能是创建订单按钮
+                return False
+            
+            return False
+        except:
+            return False
+    
     def _find_buy_buttons(self) -> Dict:
         """查找购买按钮"""
         button_selectors = [
-            "//button[contains(text(), 'Buy')]",
+            "//button[contains(translate(text(), 'BUY', 'buy'), 'buy')]",
             "//button[contains(text(), '购买')]",
-            "//button[contains(text(), 'Order')]", 
+            "//button[contains(translate(text(), 'ORDER', 'order'), 'order')]", 
             "//button[contains(text(), '订购')]",
-            "//button[contains(text(), 'Add to Cart')]",
+            "//button[contains(translate(text(), 'ADD TO CART', 'add to cart'), 'add to cart')]",
             "//button[contains(text(), '加入购物车')]",
-            ".btn-buy", ".buy-button", ".order-button",
-            "input[type='submit'][value*='buy']",
-            "input[type='submit'][value*='order']"
+            "//button[contains(text(), 'Purchase')]",
+            "//button[contains(text(), 'Get Started')]",
+            "//button[contains(text(), 'Continue')]",
+            "//button[contains(text(), '继续')]",
+            "//button[contains(text(), 'Create')]",  # 保留但需要额外检查
+            ".btn-buy", ".buy-button", ".order-button", ".purchase-button",
+            "input[type='submit'][value*='buy' i]",
+            "input[type='submit'][value*='order' i]",
+            "input[type='submit'][value*='purchase' i]",
+            "a.btn[href*='cart']", "a.btn[href*='order']"
         ]
         
         enabled_count = 0
         disabled_count = 0
+        found_buttons = []
         
         for selector in button_selectors:
             try:
@@ -152,48 +241,139 @@ class DOMElementMonitor:
                 
                 for element in elements:
                     if element.is_displayed():
+                        button_text = element.text.strip()
+                        
+                        # 特殊处理Create按钮
+                        if 'create' in button_text.lower():
+                            # 检查是否在导航区域
+                            if self._is_element_in_navigation(element):
+                                continue  # 跳过导航区的Create按钮
+                            
+                            # 检查上下文是否与购买相关
+                            if not self._is_purchase_context(element):
+                                continue
+                        
                         if element.is_enabled():
                             enabled_count += 1
+                            found_buttons.append({
+                                'text': button_text,
+                                'enabled': True
+                            })
                         else:
                             disabled_count += 1
+                            found_buttons.append({
+                                'text': button_text,
+                                'enabled': False
+                            })
             except:
                 continue
         
         return {
             'enabled_count': enabled_count,
-            'disabled_count': disabled_count
+            'disabled_count': disabled_count,
+            'buttons': found_buttons[:5]  # 返回前5个按钮的信息
         }
+    
+    def _is_element_in_navigation(self, element) -> bool:
+        """检查元素是否在导航区域内"""
+        try:
+            # 向上遍历父元素
+            current = element
+            for _ in range(5):  # 最多向上查找5层
+                current = current.find_element(By.XPATH, "..")
+                tag_name = current.tag_name.lower()
+                class_name = current.get_attribute('class') or ''
+                id_name = current.get_attribute('id') or ''
+                
+                if (tag_name in ['nav', 'header'] or 
+                    any(nav_class in class_name.lower() for nav_class in ['nav', 'menu', 'sidebar']) or
+                    any(nav_id in id_name.lower() for nav_id in ['nav', 'menu', 'sidebar'])):
+                    return True
+            return False
+        except:
+            return False
+    
+    def _is_purchase_context(self, element) -> bool:
+        """检查元素周围是否有购买相关的上下文"""
+        try:
+            # 获取元素周围的文本
+            parent = element.find_element(By.XPATH, "..")
+            context_text = parent.text.lower()
+            
+            # 购买相关的上下文关键词
+            purchase_keywords = [
+                'price', 'cost', 'plan', 'package', 'subscription',
+                '价格', '费用', '套餐', '订阅', 'billing', 'payment',
+                'monthly', 'yearly', '月付', '年付', 'configure'
+            ]
+            
+            return any(keyword in context_text for keyword in purchase_keywords)
+        except:
+            return False
     
     def _check_stock_text(self) -> Dict:
         """检查库存相关文本"""
+        # 高优先级缺货选择器
+        high_priority_out_selectors = [
+            "//h1[contains(translate(text(), 'OUT OF STOCK', 'out of stock'), 'out of stock')]",
+            "//h2[contains(translate(text(), 'OUT OF STOCK', 'out of stock'), 'out of stock')]",
+            "//h3[contains(translate(text(), 'OUT OF STOCK', 'out of stock'), 'out of stock')]",
+            "//*[contains(@class, 'title')][contains(translate(text(), 'OUT OF STOCK', 'out of stock'), 'out of stock')]",
+            "//*[contains(@class, 'heading')][contains(translate(text(), 'OUT OF STOCK', 'out of stock'), 'out of stock')]",
+        ]
+        
+        # 普通缺货选择器
         out_of_stock_selectors = [
-            "//*[contains(text(), 'Out of Stock')]",
+            "//*[contains(translate(text(), 'OUT OF STOCK', 'out of stock'), 'out of stock')]",
             "//*[contains(text(), '缺货')]",
-            "//*[contains(text(), 'Sold Out')]",
+            "//*[contains(translate(text(), 'SOLD OUT', 'sold out'), 'sold out')]",
             "//*[contains(text(), '售罄')]",
             "//*[contains(text(), '缺货中')]",
-            "//*[contains(text(), 'unavailable')]",
-            "//*[contains(text(), '暂无库存')]"
+            "//*[contains(translate(text(), 'UNAVAILABLE', 'unavailable'), 'unavailable')]",
+            "//*[contains(text(), '暂无库存')]",
+            "//*[contains(text(), '库存不足')]",
+            "//*[contains(text(), 'currently out of stock')]",
+            "//*[contains(text(), 'suspended')]"
         ]
         
         in_stock_selectors = [
-            "//*[contains(text(), 'In Stock')]",
+            "//*[contains(translate(text(), 'IN STOCK', 'in stock'), 'in stock')]",
             "//*[contains(text(), '有货')]",
-            "//*[contains(text(), 'Available')]",
+            "//*[contains(translate(text(), 'AVAILABLE', 'available'), 'available')]",
             "//*[contains(text(), '现货')]",
             "//*[contains(text(), '立即购买')]"
         ]
         
-        # 检查缺货文本
+        # 优先检查高优先级缺货文本（标题级别）
+        for selector in high_priority_out_selectors:
+            try:
+                elements = self.driver.find_elements(By.XPATH, selector)
+                visible_elements = [el for el in elements if el.is_displayed()]
+                if visible_elements:
+                    element_text = visible_elements[0].text.strip()
+                    return {
+                        'status': False,
+                        'message': f'页面标题显示缺货: {element_text}',
+                        'definitive': True
+                    }
+            except:
+                continue
+        
+        # 检查普通缺货文本
         for selector in out_of_stock_selectors:
             try:
                 elements = self.driver.find_elements(By.XPATH, selector)
-                if elements and any(el.is_displayed() for el in elements):
-                    return {
-                        'status': False,
-                        'message': f'发现缺货文本: {elements[0].text}',
-                        'definitive': True
-                    }
+                visible_elements = [el for el in elements if el.is_displayed()]
+                
+                # 过滤掉可能的误判（如菜单项）
+                for element in visible_elements:
+                    if not self._is_element_in_navigation(element):
+                        element_text = element.text.strip()[:100]  # 限制文本长度
+                        return {
+                            'status': False,
+                            'message': f'发现缺货文本: {element_text}',
+                            'definitive': True
+                        }
             except:
                 continue
         
@@ -201,12 +381,16 @@ class DOMElementMonitor:
         for selector in in_stock_selectors:
             try:
                 elements = self.driver.find_elements(By.XPATH, selector)
-                if elements and any(el.is_displayed() for el in elements):
-                    return {
-                        'status': True,
-                        'message': f'发现有货文本: {elements[0].text}',
-                        'definitive': True
-                    }
+                visible_elements = [el for el in elements if el.is_displayed()]
+                
+                for element in visible_elements:
+                    if not self._is_element_in_navigation(element):
+                        element_text = element.text.strip()[:100]
+                        return {
+                            'status': True,
+                            'message': f'发现有货文本: {element_text}',
+                            'definitive': True
+                        }
             except:
                 continue
         
@@ -219,16 +403,21 @@ class DOMElementMonitor:
     def _check_price_elements(self) -> Dict:
         """检查价格元素"""
         price_selectors = [
-            ".price", ".cost", ".amount", 
-            "[class*='price']", "[class*='cost']",
+            ".price", ".cost", ".amount", ".pricing",
+            "[class*='price']", "[class*='cost']", "[class*='pricing']",
             "//*[contains(text(), '$')]",
             "//*[contains(text(), '¥')]",
-            "//*[contains(text(), '€')]"
+            "//*[contains(text(), '€')]",
+            "//*[contains(text(), '/mo')]",
+            "//*[contains(text(), '/month')]",
+            "//*[contains(text(), '/年')]"
         ]
         
         form_selectors = [
-            "form", "input[type='submit']", "button[type='submit']",
-            ".checkout", ".order-form", ".purchase-form"
+            "form[action*='cart']", "form[action*='order']", 
+            "input[type='submit']", "button[type='submit']",
+            ".checkout", ".order-form", ".purchase-form",
+            ".product-options", ".configuration"
         ]
         
         found_prices = []
@@ -243,10 +432,12 @@ class DOMElementMonitor:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 
                 for element in elements:
-                    if element.is_displayed():
+                    if element.is_displayed() and not self._is_element_in_navigation(element):
                         text = element.text.strip()
-                        if text and any(symbol in text for symbol in ['$', '¥', '€']):
-                            found_prices.append(text[:20])
+                        # 验证是否包含数字
+                        if text and any(char.isdigit() for char in text):
+                            if any(symbol in text for symbol in ['$', '¥', '€', '/mo', '/month', '/年']):
+                                found_prices.append(text[:30])
             except:
                 continue
         
