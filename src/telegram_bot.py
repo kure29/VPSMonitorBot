@@ -11,6 +11,7 @@ import cloudscraper
 import psutil
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any
 from config import Config
 from database_manager import DatabaseManager, User, MonitorItem
@@ -591,15 +592,17 @@ class TelegramBot:
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """处理回调查询"""
         query = update.callback_query
-        user_info = await self._get_user_info(update)
-        
-        if user_info.is_banned:
-            await query.answer("您已被禁用")
-            return
-        
-        data = query.data
+        await query.answer()  # 立即应答，避免超时
         
         try:
+            user_info = await self._get_user_info(update)
+            
+            if user_info.is_banned:
+                await query.edit_message_text("❌ 您已被禁用")
+                return
+            
+            data = query.data
+            
             if data == 'main_menu':
                 await self._show_main_menu(query, user_info, edit_message=True)
             
@@ -625,53 +628,55 @@ class TelegramBot:
                 await self._show_monitor_list(query, target_user_id, page, edit_message=True)
             
             elif data == 'my_stats':
+                await query.edit_message_text("📊 正在加载统计信息...")
                 await self._show_user_statistics(query.message, user_info.id)
             
             elif data == 'help':
+                await query.edit_message_text("📖 正在加载帮助信息...")
                 await self._help_command(update, context)
             
             elif data == 'admin_panel':
                 if self._check_admin_permission(user_info.id):
                     await self._show_admin_panel(query, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             # 处理管理员面板的子菜单
             elif data == 'admin_users':
                 if self._check_admin_permission(user_info.id):
                     await self._show_admin_users(query, 0, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data == 'admin_monitors':
                 if self._check_admin_permission(user_info.id):
                     await self._show_admin_monitors(query, 0, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data == 'admin_stats':
                 if self._check_admin_permission(user_info.id):
                     await self._show_admin_detailed_stats(query, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data == 'admin_system_status':
                 if self._check_admin_permission(user_info.id):
                     await self._show_system_status(query, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data == 'admin_debug':
                 if self._check_admin_permission(user_info.id):
                     await self._show_admin_debug_tools(query, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data == 'admin_config':
                 if self._check_admin_permission(user_info.id):
                     await self._show_admin_config(query, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             # 处理管理员分页
             elif data.startswith('admin_users_page_'):
@@ -679,222 +684,274 @@ class TelegramBot:
                     page = int(data.split('_')[3])
                     await self._show_admin_users(query, page, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data.startswith('admin_monitors_page_'):
                 if self._check_admin_permission(user_info.id):
                     page = int(data.split('_')[3])
                     await self._show_admin_monitors(query, page, edit_message=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             # 处理管理员操作
             elif data == 'admin_cleanup':
                 if self._check_admin_permission(user_info.id):
-                    cleanup_stats = await self.db_manager.cleanup_old_data(90)
-                    await query.answer(f"清理完成！删除了 {sum(cleanup_stats.values())} 条旧记录", show_alert=True)
-                    await self._show_admin_debug_tools(query, edit_message=True)
+                    try:
+                        cleanup_stats = await self.db_manager.cleanup_old_data(90)
+                        await query.answer(f"清理完成！删除了 {sum(cleanup_stats.values())} 条旧记录", show_alert=True)
+                        await self._show_admin_debug_tools(query, edit_message=True)
+                    except Exception as e:
+                        await query.answer(f"清理失败: {str(e)}", show_alert=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
             elif data == 'admin_export_logs':
                 if self._check_admin_permission(user_info.id):
                     await query.answer("日志导出功能开发中...", show_alert=True)
                 else:
-                    await query.answer("您没有管理员权限")
+                    await query.edit_message_text("❌ 只有管理员才能使用此功能")
             
-            await query.answer()
+            else:
+                await query.edit_message_text("⚠️ 未知的操作")
             
         except Exception as e:
-            self.logger.error(f"处理回调查询失败: {e}")
-            await query.answer("操作失败，请重试")
+            self.logger.error(f"处理回调查询失败: {e}", exc_info=True)
+            try:
+                await query.edit_message_text(
+                    "❌ 操作失败，请重试\n\n"
+                    f"错误信息: {str(e)}\n\n"
+                    "如果问题持续，请联系管理员",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')
+                    ]])
+                )
+            except:
+                pass
     
     # ===== 管理员功能实现 =====
     
     async def _show_admin_users(self, query, page: int = 0, edit_message: bool = True) -> None:
         """显示用户管理界面"""
-        users = await self.db_manager.get_all_users(include_banned=True)
-        
-        if not users:
-            text = "👥 **用户管理**\n\n❌ 暂无用户"
-            keyboard = [[InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]]
-        else:
-            total_pages = (len(users) + 10 - 1) // 10
-            start_idx = page * 10
-            end_idx = start_idx + 10
-            page_users = users[start_idx:end_idx]
+        try:
+            users = await self.db_manager.get_all_users(include_banned=True)
             
-            text = f"👥 **用户管理** (第 {page + 1}/{total_pages} 页)\n\n"
+            if not users:
+                text = "👥 **用户管理**\n\n❌ 暂无用户"
+                keyboard = [[InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]]
+            else:
+                total_pages = (len(users) + 10 - 1) // 10
+                start_idx = page * 10
+                end_idx = start_idx + 10
+                page_users = users[start_idx:end_idx]
+                
+                text = f"👥 **用户管理** (第 {page + 1}/{total_pages} 页)\n\n"
+                
+                for user in page_users:
+                    status = "🚫" if user.is_banned else ("👑" if user.is_admin else "👤")
+                    display_name = user.username or user.first_name or f"用户{user.id}"
+                    text += f"{status} {display_name}\n"
+                    text += f"   ID: `{user.id}` | 监控: {user.total_monitors}\n"
+                
+                keyboard = []
+                
+                # 分页按钮
+                nav_buttons = []
+                if page > 0:
+                    nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f'admin_users_page_{page-1}'))
+                if page < total_pages - 1:
+                    nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f'admin_users_page_{page+1}'))
+                
+                if nav_buttons:
+                    keyboard.append(nav_buttons)
+                
+                keyboard.append([InlineKeyboardButton("🔙 返回", callback_data='admin_panel')])
             
-            for user in page_users:
-                status = "🚫" if user.is_banned else ("👑" if user.is_admin else "👤")
-                display_name = user.username or user.first_name or f"用户{user.id}"
-                text += f"{status} {display_name}\n"
-                text += f"   ID: `{user.id}` | 监控: {user.total_monitors}\n"
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
-            keyboard = []
-            
-            # 分页按钮
-            nav_buttons = []
-            if page > 0:
-                nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f'admin_users_page_{page-1}'))
-            if page < total_pages - 1:
-                nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f'admin_users_page_{page+1}'))
-            
-            if nav_buttons:
-                keyboard.append(nav_buttons)
-            
-            keyboard.append([InlineKeyboardButton("🔙 返回", callback_data='admin_panel')])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if edit_message:
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-        else:
-            await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+        except Exception as e:
+            self.logger.error(f"显示用户管理界面失败: {e}")
+            await query.answer("加载用户列表失败，请稍后重试", show_alert=True)
     
     async def _show_admin_monitors(self, query, page: int = 0, edit_message: bool = True) -> None:
         """显示全局监控管理"""
-        items = await self.db_manager.get_monitor_items(enabled_only=False)
-        
-        if not items:
-            text = "📊 **全局监控管理**\n\n❌ 暂无监控项目"
-            keyboard = [[InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]]
-        else:
-            items_list = list(items.values())
-            total_pages = (len(items_list) + 10 - 1) // 10
-            start_idx = page * 10
-            end_idx = start_idx + 10
-            page_items = items_list[start_idx:end_idx]
+        try:
+            items = await self.db_manager.get_monitor_items(enabled_only=False)
             
-            text = f"📊 **全局监控管理** (第 {page + 1}/{total_pages} 页)\n\n"
-            
-            for i, item in enumerate(page_items, start=start_idx + 1):
-                status_emoji = "🟢" if item.status else "🔴" if item.status is False else "⚪"
-                global_mark = "🌐" if item.is_global else ""
-                enabled_mark = "✅" if item.enabled else "❌"
+            if not items:
+                text = "📊 **全局监控管理**\n\n❌ 暂无监控项目"
+                keyboard = [[InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]]
+            else:
+                items_list = list(items.values())
+                total_pages = (len(items_list) + 10 - 1) // 10
+                start_idx = page * 10
+                end_idx = start_idx + 10
+                page_items = items_list[start_idx:end_idx]
                 
-                # 获取用户信息
-                user = await self.db_manager.get_user(item.user_id)
-                user_display = user.username if user and user.username else f"用户{item.user_id}"
+                text = f"📊 **全局监控管理** (第 {page + 1}/{total_pages} 页)\n\n"
                 
-                text += f"{i}. {status_emoji}{enabled_mark} {global_mark}{item.name[:20]}\n"
-                text += f"   👤 {user_display} | 📊 成功率: {calculate_success_rate(item)}\n"
+                for i, item in enumerate(page_items, start=start_idx + 1):
+                    status_emoji = "🟢" if item.status else "🔴" if item.status is False else "⚪"
+                    global_mark = "🌐" if item.is_global else ""
+                    enabled_mark = "✅" if item.enabled else "❌"
+                    
+                    # 获取用户信息
+                    user = await self.db_manager.get_user(item.user_id)
+                    user_display = user.username if user and user.username else f"用户{item.user_id}"
+                    
+                    text += f"{i}. {status_emoji}{enabled_mark} {global_mark}{item.name[:20]}\n"
+                    text += f"   👤 {user_display} | 📊 成功率: {calculate_success_rate(item)}\n"
+                
+                keyboard = []
+                
+                # 分页按钮
+                nav_buttons = []
+                if page > 0:
+                    nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f'admin_monitors_page_{page-1}'))
+                if page < total_pages - 1:
+                    nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f'admin_monitors_page_{page+1}'))
+                
+                if nav_buttons:
+                    keyboard.append(nav_buttons)
+                
+                keyboard.append([InlineKeyboardButton("🔙 返回", callback_data='admin_panel')])
             
-            keyboard = []
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # 分页按钮
-            nav_buttons = []
-            if page > 0:
-                nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f'admin_monitors_page_{page-1}'))
-            if page < total_pages - 1:
-                nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f'admin_monitors_page_{page+1}'))
-            
-            if nav_buttons:
-                keyboard.append(nav_buttons)
-            
-            keyboard.append([InlineKeyboardButton("🔙 返回", callback_data='admin_panel')])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if edit_message:
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-        else:
-            await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await query.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+        except Exception as e:
+            self.logger.error(f"显示监控管理界面失败: {e}")
+            await query.answer("加载监控列表失败，请稍后重试", show_alert=True)
     
     async def _show_admin_detailed_stats(self, query, edit_message: bool = True) -> None:
         """显示详细统计"""
-        stats = await self.db_manager.get_global_statistics(days=30)
-        
-        text = (
-            "📈 **详细统计信息** (30天)\n\n"
+        try:
+            stats = await self.db_manager.get_global_statistics(days=30)
             
-            "👥 **用户统计:**\n"
-            f"• 总用户数: {stats.get('users', {}).get('total', 0)}\n"
-            f"• 活跃用户: {stats.get('users', {}).get('active', 0)}\n"
-            f"• 管理员: {stats.get('users', {}).get('admin', 0)}\n"
-            f"• 被封用户: {stats.get('users', {}).get('banned', 0)}\n\n"
+            text = (
+                "📈 **详细统计信息** (30天)\n\n"
+                
+                "👥 **用户统计:**\n"
+                f"• 总用户数: {stats.get('users', {}).get('total', 0)}\n"
+                f"• 活跃用户: {stats.get('users', {}).get('active', 0)}\n"
+                f"• 管理员: {stats.get('users', {}).get('admin', 0)}\n"
+                f"• 被封用户: {stats.get('users', {}).get('banned', 0)}\n\n"
+                
+                "📊 **监控统计:**\n"
+                f"• 总监控项: {stats.get('monitor_items', {}).get('total', 0)}\n"
+                f"• 启用项目: {stats.get('monitor_items', {}).get('enabled', 0)}\n"
+                f"• 全局项目: {stats.get('monitor_items', {}).get('global', 0)}\n"
+                f"• 有货项目: {stats.get('monitor_items', {}).get('in_stock', 0)}\n\n"
+                
+                "🔍 **检查统计:**\n"
+                f"• 总检查次数: {stats.get('checks', {}).get('total', 0)}\n"
+                f"• 成功检查: {stats.get('checks', {}).get('successful', 0)}\n"
+                f"• 平均响应时间: {stats.get('checks', {}).get('avg_response_time', 0)}s\n"
+                f"• 平均置信度: {stats.get('checks', {}).get('avg_confidence', 0)}\n\n"
+                
+                "🏆 **活跃用户TOP 5:**\n"
+            )
             
-            "📊 **监控统计:**\n"
-            f"• 总监控项: {stats.get('monitor_items', {}).get('total', 0)}\n"
-            f"• 启用项目: {stats.get('monitor_items', {}).get('enabled', 0)}\n"
-            f"• 全局项目: {stats.get('monitor_items', {}).get('global', 0)}\n"
-            f"• 有货项目: {stats.get('monitor_items', {}).get('in_stock', 0)}\n\n"
+            top_users = stats.get('top_users', [])[:5]
+            if top_users:
+                for i, user in enumerate(top_users, 1):
+                    text += f"{i}. {user['username']} - {user['activity_count']}次活动\n"
+            else:
+                text += "暂无数据\n"
             
-            "🔍 **检查统计:**\n"
-            f"• 总检查次数: {stats.get('checks', {}).get('total', 0)}\n"
-            f"• 成功检查: {stats.get('checks', {}).get('successful', 0)}\n"
-            f"• 平均响应时间: {stats.get('checks', {}).get('avg_response_time', 0)}s\n"
-            f"• 平均置信度: {stats.get('checks', {}).get('avg_confidence', 0)}\n\n"
+            keyboard = [
+                [InlineKeyboardButton("🔄 刷新", callback_data='admin_stats')],
+                [InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]
+            ]
             
-            "🏆 **活跃用户TOP 5:**\n"
-        )
-        
-        top_users = stats.get('top_users', [])[:5]
-        for i, user in enumerate(top_users, 1):
-            text += f"{i}. {user['username']} - {user['activity_count']}次活动\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 刷新", callback_data='admin_stats')],
-            [InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if edit_message:
-            await query.edit_message_text(text, reply_markup=reply_markup)
-        else:
-            await query.reply_text(text, reply_markup=reply_markup)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await query.reply_text(text, reply_markup=reply_markup)
+                
+        except Exception as e:
+            self.logger.error(f"显示详细统计失败: {e}")
+            await query.answer("加载统计信息失败，请稍后重试", show_alert=True)
     
     async def _show_system_status(self, query, edit_message: bool = True) -> None:
         """显示系统状态"""
-        # 获取系统信息
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        # 获取进程信息
-        process = psutil.Process(os.getpid())
-        process_memory = process.memory_info().rss / 1024 / 1024  # MB
-        process_cpu = process.cpu_percent(interval=1)
-        
-        # 获取数据库大小
-        db_size = 0
-        if self.db_manager.db_path.exists():
-            db_size = self.db_manager.db_path.stat().st_size / 1024 / 1024  # MB
-        
-        text = (
-            "📊 **系统状态**\n\n"
+        try:
+            # 获取系统信息
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
             
-            "🖥️ **系统资源:**\n"
-            f"• CPU使用率: {cpu_percent}%\n"
-            f"• 内存使用: {memory.percent}% ({memory.used // 1024 // 1024}MB / {memory.total // 1024 // 1024}MB)\n"
-            f"• 磁盘使用: {disk.percent}% ({disk.used // 1024 // 1024 // 1024}GB / {disk.total // 1024 // 1024 // 1024}GB)\n\n"
+            # 获取进程信息
+            process = psutil.Process(os.getpid())
+            process_memory = process.memory_info().rss / 1024 / 1024  # MB
+            process_cpu = process.cpu_percent(interval=1)
             
-            "🤖 **进程信息:**\n"
-            f"• 进程CPU: {process_cpu}%\n"
-            f"• 进程内存: {process_memory:.1f}MB\n"
-            f"• 数据库大小: {db_size:.1f}MB\n\n"
+            # 获取数据库大小
+            db_size = 0
+            try:
+                if self.db_manager.db_path.exists():
+                    db_size = self.db_manager.db_path.stat().st_size / 1024 / 1024  # MB
+            except:
+                pass
             
-            "⚙️ **配置信息:**\n"
-            f"• 检查间隔: {self.config.check_interval}秒\n"
-            f"• 通知聚合: {self.config.notification_aggregation_interval}秒\n"
-            f"• 通知冷却: {self.config.notification_cooldown}秒\n"
-            f"• 置信度阈值: {self.config.confidence_threshold}\n"
-            f"• 每日添加限制: {self.config.daily_add_limit}\n"
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 刷新", callback_data='admin_system_status')],
-            [InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if edit_message:
-            await query.edit_message_text(text, reply_markup=reply_markup)
-        else:
-            await query.reply_text(text, reply_markup=reply_markup)
+            text = (
+                "📊 **系统状态**\n\n"
+                
+                "🖥️ **系统资源:**\n"
+                f"• CPU使用率: {cpu_percent}%\n"
+                f"• 内存使用: {memory.percent}% ({memory.used // 1024 // 1024}MB / {memory.total // 1024 // 1024}MB)\n"
+                f"• 磁盘使用: {disk.percent}% ({disk.used // 1024 // 1024 // 1024}GB / {disk.total // 1024 // 1024 // 1024}GB)\n\n"
+                
+                "🤖 **进程信息:**\n"
+                f"• 进程CPU: {process_cpu}%\n"
+                f"• 进程内存: {process_memory:.1f}MB\n"
+                f"• 数据库大小: {db_size:.1f}MB\n\n"
+                
+                "⚙️ **配置信息:**\n"
+                f"• 检查间隔: {self.config.check_interval}秒\n"
+                f"• 通知聚合: {self.config.notification_aggregation_interval}秒\n"
+                f"• 通知冷却: {self.config.notification_cooldown}秒\n"
+                f"• 置信度阈值: {self.config.confidence_threshold}\n"
+                f"• 每日添加限制: {self.config.daily_add_limit}\n"
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 刷新", callback_data='admin_system_status')],
+                [InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if edit_message:
+                await query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await query.reply_text(text, reply_markup=reply_markup)
+                
+        except Exception as e:
+            self.logger.error(f"显示系统状态失败: {e}")
+            error_text = (
+                "📊 **系统状态**\n\n"
+                "❌ 无法获取系统状态信息\n"
+                f"错误: {str(e)}\n\n"
+                "请确保已安装 psutil 库：\n"
+                "`pip install psutil`"
+            )
+            keyboard = [[InlineKeyboardButton("🔙 返回", callback_data='admin_panel')]]
+            
+            if edit_message:
+                await query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            else:
+                await query.reply_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     
     async def _show_admin_debug_tools(self, query, edit_message: bool = True) -> None:
         """显示调试工具"""
