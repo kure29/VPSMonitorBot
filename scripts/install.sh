@@ -1,5 +1,5 @@
 #!/bin/bash
-# VPS监控系统 v3.0 - 一键安装脚本（多用户智能监控版）
+# VPS监控系统 v3.1 - 一键安装脚本（多用户智能监控版）
 # 作者: kure29
 # 网站: https://kure29.com
 
@@ -15,7 +15,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 配置变量
-readonly VERSION="3.0.0"
+readonly VERSION="3.1.0"
 readonly AUTHOR="kure29"
 readonly WEBSITE="https://kure29.com"
 readonly GITHUB_REPO="https://github.com/kure29/VPSMonitorBot"
@@ -94,7 +94,7 @@ EOF
     echo -e "${PURPLE}VPS库存监控系统 v${VERSION} 安装程序 - 多用户智能监控版${NC}"
     echo -e "${CYAN}作者: ${AUTHOR} | 网站: ${WEBSITE}${NC}"
     echo ""
-    echo -e "${GREEN}🆕 v3.0 新功能：${NC}"
+    echo -e "${GREEN}🆕 v3.1 新功能：${NC}"
     echo "• 🧠 智能组合监控算法（DOM+API+指纹+关键词）"
     echo "• 🎯 多重检测方法交叉验证"
     echo "• 📊 置信度评分系统"
@@ -103,7 +103,7 @@ EOF
     echo "• 📈 用户行为统计和分析"
     echo "• 🛡️ 主流VPS商家专用适配"
     echo "• 🔍 专业调试工具"
-    echo "• 📤 数据导出和备份功能"
+    echo "• 📁 模块化代码结构"
     echo ""
 }
 
@@ -121,14 +121,14 @@ VPS监控系统 v${VERSION} 安装脚本 - 多用户智能监控版
     --mode <模式>       安装模式: local|docker|systemd (默认: local)
     --skip-deps         跳过系统依赖安装
     --no-download       不下载项目代码 (使用现有代码)
-    --migrate           从v1.0/v2.0自动迁移数据
+    --migrate           从v1.0/v2.0/v3.0自动迁移数据
     --init-db           只初始化数据库
     --check-db          检查数据库状态
     --force             强制覆盖现有安装
     --auto-yes          自动确认所有提示 (用于自动化安装)
     --configure         交互式配置Telegram信息
 
-v3.0 新功能:
+v3.1 新功能:
     --migrate           从旧版本迁移到多用户数据库
     --init-db           初始化多用户SQLite数据库
     --check-db          检查数据库完整性
@@ -141,6 +141,7 @@ v3.0 新功能:
     • 用户行为统计和管理
     • 智能防刷机制
     • 管理员权限控制
+    • 模块化代码结构
 
 示例:
     $0                              # 默认安装到当前目录
@@ -366,7 +367,7 @@ download_project() {
         
         # 检查目录是否包含项目文件
         local has_project_files=false
-        if [[ -f "$target_dir/src/monitor.py" ]] || [[ -f "$target_dir/requirements.txt" ]]; then
+        if [[ -f "$target_dir/main.py" ]] || [[ -f "$target_dir/src/main_monitor.py" ]] || [[ -f "$target_dir/requirements.txt" ]]; then
             has_project_files=true
             log_info "检测到现有项目文件"
         fi
@@ -800,7 +801,7 @@ try:
             f'https://api.telegram.org/bot{config[\"bot_token\"]}/sendMessage', 
             json={
                 'chat_id': config['chat_id'], 
-                'text': '🤖 VPS监控系统 v3.0 (多用户版) 安装完成！\\n\\n这是一条测试消息，说明配置正确。\\n\\n🧩 多用户特性：\\n• 所有用户都可添加监控\\n• 库存变化推送给管理员\\n• 智能组合监控算法\\n\\n请使用 /start 命令开始使用。'
+                'text': '🤖 VPS监控系统 v3.1 (多用户版) 安装完成！\\n\\n这是一条测试消息，说明配置正确。\\n\\n🧩 多用户特性：\\n• 所有用户都可添加监控\\n• 库存变化推送给管理员\\n• 智能组合监控算法\\n\\n请使用 /start 命令开始使用。'
             }, 
             timeout=10
         )
@@ -871,10 +872,16 @@ migrate_from_old_version() {
         log_info "发现v1.0版本的urls.json文件"
     fi
     
+    # 检查旧的单文件结构
+    if [[ -f "monitor.py" ]] && [[ ! -f "main.py" ]]; then
+        has_old_data=true
+        log_info "发现v3.0单文件版本"
+    fi
+    
     if [[ -f "vps_monitor.db" ]]; then
         # 检查是否是旧版本数据库结构
         if sqlite3 vps_monitor.db "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" | grep -q users; then
-            log_info "检测到v3.0多用户数据库结构，无需迁移"
+            log_info "检测到v3.1多用户数据库结构，无需迁移"
         else
             has_old_data=true
             log_info "发现v2.0版本的数据库文件"
@@ -893,6 +900,11 @@ migrate_from_old_version() {
     if [[ -f "urls.json" ]]; then
         cp urls.json "$backup_dir/"
         log_info "已备份urls.json到 $backup_dir/"
+    fi
+    
+    if [[ -f "monitor.py" ]]; then
+        cp monitor.py "$backup_dir/"
+        log_info "已备份monitor.py到 $backup_dir/"
     fi
     
     if [[ -f "vps_monitor.db" ]]; then
@@ -1041,7 +1053,7 @@ show_post_install_info() {
             echo "🔧 手动启动:"
             echo "   cd $work_dir"
             echo "   source venv/bin/activate"
-            echo "   python3 src/monitor.py"
+            echo "   python3 main.py"
             ;;
         systemd)
             echo "🚀 服务管理:"
@@ -1060,7 +1072,7 @@ show_post_install_info() {
     esac
     
     echo ""
-    echo "🆕 v3.0 多用户版新特性:"
+    echo "🆕 v3.1 多用户版新特性:"
     echo "• 🧠 智能组合监控算法（DOM+API+关键词+指纹）"
     echo "• 🎯 多重检测方法交叉验证"
     echo "• 📊 置信度评分系统"
@@ -1069,6 +1081,7 @@ show_post_install_info() {
     echo "• 📈 用户行为统计和分析"
     echo "• 🛡️ 主流VPS商家专用适配"
     echo "• 🔍 专业调试工具和详细日志"
+    echo "• 📁 模块化代码结构，易于维护"
     echo ""
     
     if [[ "$configured" == "true" ]]; then
@@ -1119,6 +1132,13 @@ show_post_install_info() {
     echo "• 添加全局监控项（所有用户可见）"
     echo "• 系统维护和数据清理"
     echo ""
+    echo "📁 模块化代码结构:"
+    echo "• main.py - 主程序入口"
+    echo "• src/config.py - 配置管理"
+    echo "• src/telegram_bot.py - Telegram机器人"
+    echo "• src/main_monitor.py - 主监控器"
+    echo "• src/monitors/ - 监控模块目录"
+    echo ""
     echo "❓ 获取帮助:"
     echo "   作者: $AUTHOR"
     echo "   网站: $WEBSITE"
@@ -1135,6 +1155,11 @@ setup_permissions() {
     
     # 设置脚本执行权限
     find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    
+    # 设置主程序执行权限
+    if [[ -f "main.py" ]]; then
+        chmod +x main.py
+    fi
     
     # 创建必要目录
     mkdir -p data logs backup export reports
@@ -1159,8 +1184,8 @@ verify_installation() {
     local work_dir="$1"
     cd "$work_dir"
     
-    # 检查必要文件
-    local required_files=("src/monitor.py" "src/database_manager.py" "requirements.txt" "config.json")
+    # 检查必要文件（更新为新的文件结构）
+    local required_files=("main.py" "src/main_monitor.py" "src/config.py" "src/telegram_bot.py" "src/database_manager.py" "requirements.txt" "config.json")
     for file in "${required_files[@]}"; do
         if [[ -f "$file" ]]; then
             log_debug "✓ $file"
@@ -1169,6 +1194,14 @@ verify_installation() {
             return 1
         fi
     done
+    
+    # 检查模块目录
+    if [[ -d "src/monitors" ]]; then
+        log_debug "✓ src/monitors 目录"
+    else
+        log_error "✗ src/monitors 目录 (缺失)"
+        return 1
+    fi
     
     # 检查Python环境
     if [[ -f "venv/bin/activate" ]]; then
@@ -1180,6 +1213,9 @@ import telegram
 import cloudscraper
 import aiosqlite
 from database_manager import DatabaseManager
+from main_monitor import VPSMonitor
+from telegram_bot import TelegramBot
+from config import ConfigManager
 print('✅ Python依赖检查通过')
 " 2>/dev/null; then
             log_info "✓ Python依赖检查通过"
@@ -1208,10 +1244,10 @@ setup_systemd_service() {
     
     local work_dir="$1"
     
-    # 创建服务文件
+    # 创建服务文件（更新启动命令）
     cat > /etc/systemd/system/vps-monitor.service << EOF
 [Unit]
-Description=VPS Monitor Bot v3.0
+Description=VPS Monitor Bot v3.1 (Modular Version)
 After=network.target
 
 [Service]
@@ -1219,7 +1255,7 @@ Type=simple
 User=$USER
 WorkingDirectory=$work_dir
 Environment="PATH=$work_dir/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=$work_dir/venv/bin/python3 $work_dir/src/monitor.py
+ExecStart=$work_dir/venv/bin/python3 $work_dir/main.py
 Restart=always
 RestartSec=10
 
@@ -1240,7 +1276,7 @@ setup_docker() {
     local work_dir="$1"
     cd "$work_dir"
     
-    # 创建Dockerfile
+    # 创建Dockerfile（更新为新的文件结构）
     cat > Dockerfile << 'EOF'
 FROM python:3.9-slim
 
@@ -1255,6 +1291,7 @@ RUN apt-get update && apt-get install -y \
 
 # 复制项目文件
 COPY requirements.txt .
+COPY main.py .
 COPY src/ ./src/
 COPY config.json .
 
@@ -1262,7 +1299,7 @@ COPY config.json .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 运行监控器
-CMD ["python3", "src/monitor.py"]
+CMD ["python3", "main.py"]
 EOF
 
     # 创建docker-compose.yml
@@ -1311,7 +1348,7 @@ main_install() {
                 exit 0
                 ;;
             -v|--version)
-                echo "VPS监控系统 v${VERSION} - 多用户智能监控版"
+                echo "VPS监控系统 v${VERSION} - 多用户智能监控版（模块化）"
                 exit 0
                 ;;
             --dir)
@@ -1390,7 +1427,7 @@ main_install() {
         exit $?
     fi
     
-    log_info "开始安装 VPS监控系统 v${VERSION} - 多用户智能监控版"
+    log_info "开始安装 VPS监控系统 v${VERSION} - 多用户智能监控版（模块化）"
     log_info "安装模式: $install_mode"
     
     # 检测系统
@@ -1448,7 +1485,7 @@ main_install() {
     init_multiuser_database "$target_dir"
     
     # 数据迁移（如果需要）
-    if [[ "$migrate_data" == true ]] || [[ -f "$target_dir/urls.json" ]] || [[ -f "$target_dir/vps_monitor.db" ]]; then
+    if [[ "$migrate_data" == true ]] || [[ -f "$target_dir/urls.json" ]] || [[ -f "$target_dir/monitor.py" && ! -f "$target_dir/main.py" ]] || [[ -f "$target_dir/vps_monitor.db" ]]; then
         echo ""
         echo "=== 数据迁移 ==="
         migrate_from_old_version "$target_dir"
@@ -1472,7 +1509,15 @@ main_install() {
     "daily_add_limit": 50,
     "confidence_threshold": 0.6,
     "enable_selenium": true,
-    "enable_api_discovery": true
+    "enable_api_discovery": true,
+    "notification_aggregation_interval": 180,
+    "notification_cooldown": 600,
+    "request_timeout": 30,
+    "retry_delay": 60,
+    "items_per_page": 10,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "debug": false,
+    "log_level": "INFO"
 }
 EOF
             log_info "已创建基础配置文件"
