@@ -844,10 +844,6 @@ class TelegramBot:
             elif data.startswith('item_detail_'):
                 item_id = data.replace('item_detail_', '')
                 await self._show_item_detail(query, item_id, user_info, edit_message=True)
-
-            elif data.startswith('edit_item_'):
-                item_id = data.replace('edit_item_', '')
-                await self._show_edit_item_prompt(query, item_id, edit_message=True)
             
             elif data.startswith('delete_item_'):
                 item_id = data.replace('delete_item_', '')
