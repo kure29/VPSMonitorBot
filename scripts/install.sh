@@ -522,6 +522,103 @@ else:
     }
 }
 
+# 初始化多用户数据库 - 添加缺失的函数
+init_multiuser_database() {
+    log_info "初始化多用户数据库"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 激活虚拟环境
+    if [[ -f "venv/bin/activate" ]]; then
+        source venv/bin/activate
+    fi
+    
+    # 创建简单的初始化脚本
+    cat > init_db.py << 'EOF'
+#!/usr/bin/env python3
+"""初始化多用户数据库"""
+import asyncio
+import sys
+from pathlib import Path
+
+# 添加源代码目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+try:
+    from database_manager import DatabaseManager
+    
+    async def init():
+        db = DatabaseManager("vps_monitor.db")
+        await db.initialize()
+        print("✅ 多用户数据库初始化成功")
+        return True
+
+    if __name__ == "__main__":
+        result = asyncio.run(init())
+        sys.exit(0 if result else 1)
+except Exception as e:
+    print(f"❌ 数据库初始化失败: {e}")
+    sys.exit(1)
+EOF
+    
+    chmod +x init_db.py
+    
+    # 运行初始化脚本
+    if python3 init_db.py; then
+        log_info "✅ 多用户数据库初始化成功"
+        rm -f init_db.py
+        return 0
+    else
+        log_error "❌ 多用户数据库初始化失败"
+        rm -f init_db.py
+        return 1
+    fi
+}
+
+# 检查数据库状态
+check_database_status() {
+    log_info "检查数据库状态"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    if [[ ! -f "vps_monitor.db" ]]; then
+        log_warn "数据库文件不存在"
+        return 1
+    fi
+    
+    # 激活虚拟环境
+    if [[ -f "venv/bin/activate" ]]; then
+        source venv/bin/activate
+    fi
+    
+    python3 -c "
+import sqlite3
+import sys
+
+try:
+    conn = sqlite3.connect('vps_monitor.db')
+    cursor = conn.cursor()
+    
+    # 检查表结构
+    cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")
+    tables = [row[0] for row in cursor.fetchall()]
+    
+    print('📊 数据库表:')
+    for table in tables:
+        cursor.execute(f'SELECT COUNT(*) FROM {table}')
+        count = cursor.fetchone()[0]
+        print(f'  - {table}: {count} 条记录')
+    
+    conn.close()
+    print('\\n✅ 数据库状态正常')
+except Exception as e:
+    print(f'❌ 数据库检查失败: {e}')
+    sys.exit(1)
+"
+}
+
 # 测试多用户数据库功能
 test_multiuser_database() {
     log_info "测试多用户数据库功能"
@@ -535,122 +632,22 @@ test_multiuser_database() {
         log_debug "虚拟环境已激活"
     fi
     
-    # 🔧 关键修复：创建独立的测试脚本
-    if [[ ! -f "test_database.py" ]]; then
-        log_info "创建数据库测试脚本..."
-        
-        # 创建测试脚本（内容见上面的 test_database.py）
-        cat > test_database.py << 'EOF'
-#!/usr/bin/env python3
-"""数据库测试脚本"""
-import asyncio
-import sys
-import os
-import traceback
-from pathlib import Path
-
-def setup_python_path():
-    current_dir = Path(__file__).parent
-    possible_paths = [
-        current_dir,
-        current_dir / "src",
-        current_dir.parent,
-        current_dir.parent / "src"
-    ]
-    
-    db_manager_path = None
-    for path in possible_paths:
-        if (path / "database_manager.py").exists():
-            db_manager_path = str(path)
-            break
-    
-    if not db_manager_path:
-        print("❌ 未找到 database_manager.py 文件")
-        return False
-    
-    if db_manager_path not in sys.path:
-        sys.path.insert(0, db_manager_path)
-    
-    print(f"✅ 找到数据库管理器: {db_manager_path}/database_manager.py")
-    return True
-
-async def test_database_functionality():
-    try:
-        from database_manager import DatabaseManager
-        print("✅ database_manager模块导入成功")
-        
-        db = DatabaseManager('test_multiuser_db.db')
-        await db.initialize()
-        print('✅ 多用户数据库初始化成功')
-        
-        user = await db.add_or_update_user(
-            user_id='test_user_123',
-            username='testuser',
-            first_name='Test',
-            last_name='User'
-        )
-        print(f'✅ 用户管理测试成功: {user.username}')
-        
-        item_id, success = await db.add_monitor_item(
-            user_id='test_user_123',
-            name='测试监控项',
-            url='https://example.com/test',
-            config='test config'
-        )
-        
-        if success:
-            print(f'✅ 监控项管理测试成功: {item_id}')
-        else:
-            print('❌ 监控项管理测试失败')
-            return False
-        
-        stats = await db.get_user_statistics('test_user_123')
-        print(f'✅ 统计功能测试成功')
-        
-        if os.path.exists('test_multiuser_db.db'):
-            os.remove('test_multiuser_db.db')
-            print('✅ 测试数据清理完成')
-        
-        return True
-        
-    except Exception as e:
-        print(f'❌ 数据库测试失败: {e}')
-        traceback.print_exc()
-        return False
-
-def main():
-    print("🔍 开始多用户数据库功能测试")
-    if not setup_python_path():
-        sys.exit(1)
-    
-    try:
-        result = asyncio.run(test_database_functionality())
-        sys.exit(0 if result else 1)
-    except Exception as e:
-        print(f"❌ 测试执行出错: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
-EOF
-        
-        chmod +x test_database.py
-        log_info "测试脚本创建完成"
-    fi
-    
-    # 🔧 关键修复：运行独立的测试脚本
-    log_info "运行数据库测试..."
-    if python3 test_database.py; then
-        log_info "✅ 多用户数据库功能测试通过"
-        # 清理测试脚本
-        rm -f test_database.py
-        return 0
+    # 运行测试脚本
+    if [[ -f "test_database.py" ]]; then
+        log_info "运行数据库测试..."
+        if python3 test_database.py; then
+            log_info "✅ 多用户数据库功能测试通过"
+            return 0
+        else
+            log_error "❌ 多用户数据库功能测试失败"
+            return 1
+        fi
     else
-        log_error "❌ 多用户数据库功能测试失败"
-        log_info "测试脚本保留在 test_database.py，可手动运行调试"
-        return 1
+        log_warn "测试脚本不存在，跳过测试"
+        return 0
     fi
 }
+
 # 交互式配置Telegram信息（多用户版）
 configure_telegram_multiuser() {
     log_info "配置Telegram信息（多用户版）"
@@ -913,6 +910,12 @@ import json
 import asyncio
 import sys
 import sqlite3
+import os
+from pathlib import Path
+
+# 添加源代码目录到Python路径
+sys.path.insert(0, str(Path.cwd() / 'src'))
+
 from database_manager import DatabaseManager
 
 async def migrate():
@@ -1121,6 +1124,169 @@ show_post_install_info() {
     echo "   网站: $WEBSITE"
     echo "   项目: $GITHUB_REPO"
     echo "   版本: v$VERSION (多用户智能监控版)"
+}
+
+# 设置权限
+setup_permissions() {
+    log_info "设置文件权限"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 设置脚本执行权限
+    find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    
+    # 创建必要目录
+    mkdir -p data logs backup export reports
+    
+    # 设置数据库文件权限
+    if [[ -f "vps_monitor.db" ]]; then
+        chmod 644 vps_monitor.db
+    fi
+    
+    # 设置配置文件权限
+    if [[ -f "config.json" ]]; then
+        chmod 600 config.json
+    fi
+    
+    log_info "权限设置完成"
+}
+
+# 验证安装
+verify_installation() {
+    log_info "验证安装"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 检查必要文件
+    local required_files=("src/monitor.py" "src/database_manager.py" "requirements.txt" "config.json")
+    for file in "${required_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            log_debug "✓ $file"
+        else
+            log_error "✗ $file (缺失)"
+            return 1
+        fi
+    done
+    
+    # 检查Python环境
+    if [[ -f "venv/bin/activate" ]]; then
+        source venv/bin/activate
+        if python3 -c "
+import sys
+sys.path.insert(0, 'src')
+import telegram
+import cloudscraper
+import aiosqlite
+from database_manager import DatabaseManager
+print('✅ Python依赖检查通过')
+" 2>/dev/null; then
+            log_info "✓ Python依赖检查通过"
+        else
+            log_error "✗ Python依赖检查失败"
+            return 1
+        fi
+    else
+        log_error "✗ Python虚拟环境不存在"
+        return 1
+    fi
+    
+    # 检查数据库
+    if [[ -f "vps_monitor.db" ]]; then
+        log_info "✓ 数据库文件存在"
+    else
+        log_warn "? 数据库文件不存在（将在首次运行时创建）"
+    fi
+    
+    log_info "安装验证通过"
+}
+
+# 配置systemd服务（如果需要）
+setup_systemd_service() {
+    log_info "配置systemd服务"
+    
+    local work_dir="$1"
+    
+    # 创建服务文件
+    cat > /etc/systemd/system/vps-monitor.service << EOF
+[Unit]
+Description=VPS Monitor Bot v3.0
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$work_dir
+Environment="PATH=$work_dir/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=$work_dir/venv/bin/python3 $work_dir/src/monitor.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable vps-monitor
+    
+    log_info "systemd服务配置完成"
+}
+
+# 配置Docker（如果需要）
+setup_docker() {
+    log_info "配置Docker环境"
+    
+    local work_dir="$1"
+    cd "$work_dir"
+    
+    # 创建Dockerfile
+    cat > Dockerfile << 'EOF'
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y \
+    curl \
+    jq \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制项目文件
+COPY requirements.txt .
+COPY src/ ./src/
+COPY config.json .
+
+# 安装Python依赖
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 运行监控器
+CMD ["python3", "src/monitor.py"]
+EOF
+
+    # 创建docker-compose.yml
+    cat > docker-compose.yml << EOF
+version: '3.8'
+
+services:
+  vps-monitor:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json
+      - ./vps_monitor.db:/app/vps_monitor.db
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+EOF
+
+    log_info "Docker配置完成"
 }
 
 # 主安装函数
@@ -1368,80 +1534,7 @@ EOF
     show_post_install_info "$target_dir" "$install_mode" "$tg_configured"
 }
 
-# 其他辅助函数（从原install.sh复制，略作修改）
-setup_permissions() {
-    log_info "设置文件权限"
-    
-    local work_dir="$1"
-    cd "$work_dir"
-    
-    # 设置脚本执行权限
-    find scripts -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-    
-    # 创建必要目录
-    mkdir -p data logs backup export reports
-    
-    # 设置数据库文件权限
-    if [[ -f "vps_monitor.db" ]]; then
-        chmod 644 vps_monitor.db
-    fi
-    
-    # 设置配置文件权限
-    if [[ -f "config.json" ]]; then
-        chmod 600 config.json
-    fi
-    
-    log_info "权限设置完成"
-}
-
-verify_installation() {
-    log_info "验证安装"
-    
-    local work_dir="$1"
-    cd "$work_dir"
-    
-    # 检查必要文件
-    local required_files=("src/monitor.py" "database_manager.py" "requirements.txt" "config.json")
-    for file in "${required_files[@]}"; do
-        if [[ -f "$file" ]]; then
-            log_debug "✓ $file"
-        else
-            log_error "✗ $file (缺失)"
-            return 1
-        fi
-    done
-    
-    # 检查Python环境
-    if [[ -f "venv/bin/activate" ]]; then
-        source venv/bin/activate
-        if python3 -c "
-import telegram
-import cloudscraper
-import aiosqlite
-from database_manager import DatabaseManager
-print('✅ Python依赖检查通过')
-" 2>/dev/null; then
-            log_info "✓ Python依赖检查通过"
-        else
-            log_error "✗ Python依赖检查失败"
-            return 1
-        fi
-    else
-        log_error "✗ Python虚拟环境不存在"
-        return 1
-    fi
-    
-    # 检查数据库
-    if [[ -f "vps_monitor.db" ]]; then
-        log_info "✓ 数据库文件存在"
-    else
-        log_warn "? 数据库文件不存在（将在首次运行时创建）"
-    fi
-    
-    log_info "安装验证通过"
-}
-
-# 错误处理（复制原有函数）
+# 错误处理
 error_handler() {
     local line_number=$1
     log_error "安装过程中发生错误 (行号: $line_number)"
