@@ -942,7 +942,7 @@ class TelegramBot:
             
             # 切换封禁状态
             new_status = not user.is_banned
-            success = await self.db_manager.update_user_ban_status(user_id, new_status)
+            success = await self.db_manager.ban_user(user_id, new_status, admin_user_id=user_info.id)
             
             if success:
                 action = "封禁" if new_status else "解封"
