@@ -394,8 +394,8 @@ class DatabaseManager:
     
     # ===== 监控项管理方法 =====
     async def update_monitor_item_status(self, item_id: str, enabled: bool) -> bool:
-    """更新监控项启用状态"""
-    try:
+        """更新监控项启用状态"""
+        try:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "UPDATE monitor_items SET enabled = ? WHERE id = ?",
