@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-智能组合监控器
+智能组合监控器（优化版）
 VPS监控系统 v3.1
+增强了判断逻辑和准确性
 """
 
 import time
@@ -17,7 +18,7 @@ from .api_monitor import APIMonitor
 
 
 class SmartComboMonitor:
-    """智能组合监控器"""
+    """智能组合监控器（优化版）"""
     
     def __init__(self, config: Config):
         self.config = config
@@ -26,7 +27,10 @@ class SmartComboMonitor:
         self.api_monitor = APIMonitor(config)
         self.logger = logging.getLogger(__name__)
         
-        # 简单的关键词检查器作为后备
+        # 缓存机制，避免重复检查
+        self.recent_checks = {}  # URL -> (timestamp, result)
+        self.cache_duration = 60  # 60秒缓存
+        
         self.scraper = cloudscraper.create_scraper(
             browser={
                 'browser': 'chrome',
@@ -41,6 +45,13 @@ class SmartComboMonitor:
         """智能组合检查库存状态"""
         start_time = time.time()
         
+        # 检查缓存
+        if url in self.recent_checks:
+            cached_time, cached_result = self.recent_checks[url]
+            if time.time() - cached_time < self.cache_duration:
+                self.logger.debug(f"使用缓存结果: {url}")
+                return cached_result
+        
         try:
             # 执行综合检查
             result = await self.comprehensive_check(url)
@@ -52,18 +63,24 @@ class SmartComboMonitor:
                 'method': 'SMART_COMBO',
                 'confidence': result.get('confidence', 0),
                 'methods_used': list(result.get('methods', {}).keys()),
-                'final_status': result.get('final_status')
+                'final_status': result.get('final_status'),
+                'decision_reason': result.get('decision_reason', '')
             }
             
             status = result.get('final_status')
             confidence = result.get('confidence', 0)
             
             if status is None:
-                return None, "智能检查无法确定库存状态", check_info
+                response = (None, "智能检查无法确定库存状态", check_info)
             elif confidence < self.config.confidence_threshold:
-                return None, f"置信度过低({confidence:.2f})", check_info
+                response = (None, f"置信度过低({confidence:.2f})", check_info)
             else:
-                return status, None, check_info
+                response = (status, None, check_info)
+            
+            # 缓存结果
+            self.recent_checks[url] = (time.time(), response)
+            
+            return response
                 
         except Exception as e:
             self.logger.error(f"智能检查失败 {url}: {e}")
@@ -75,328 +92,480 @@ class SmartComboMonitor:
             }
     
     async def comprehensive_check(self, url: str) -> Dict[str, Any]:
-        """综合检查库存状态"""
+        """综合检查库存状态（优化版）"""
         results = {
             'timestamp': datetime.now().isoformat(),
             'url': url,
             'methods': {},
             'final_status': None,
-            'confidence': 0
+            'confidence': 0,
+            'decision_reason': ''
         }
         
-        # 方法1: 获取页面内容用于指纹检查
-        html_content = ""
-        try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.scraper.get(url, timeout=self.config.request_timeout)
-            )
-            
-            if response and response.status_code == 200:
-                html_content = response.text
-                
-                # 页面指纹检查
-                fingerprint_changed, fp_message = await self.fingerprint_monitor.check_page_changes(url, html_content)
-                results['methods']['fingerprint'] = {
-                    'changed': fingerprint_changed,
-                    'message': fp_message
-                }
-                
-                # 改进的关键词检查
-                keyword_result = self._advanced_keyword_check(html_content)
-                results['methods']['keywords'] = keyword_result
-                
-        except Exception as e:
-            results['methods']['basic'] = {'error': str(e)}
+        # 并行执行多种检查方法
+        tasks = []
         
-        # 方法2: DOM元素检查（如果可用）
-        if self.dom_monitor and self.config.enable_selenium:
+        # 方法1: 获取页面内容
+        async def check_page_content():
             try:
-                dom_status, dom_message, dom_info = await self.dom_monitor.check_stock_by_elements(url)
-                results['methods']['dom'] = {
-                    'status': dom_status,
-                    'message': dom_message,
-                    'info': dom_info
-                }
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.scraper.get(url, timeout=self.config.request_timeout)
+                )
+                
+                if response and response.status_code == 200:
+                    html_content = response.text
+                    
+                    # 页面指纹检查
+                    fingerprint_changed, fp_message = await self.fingerprint_monitor.check_page_changes(url, html_content)
+                    results['methods']['fingerprint'] = {
+                        'changed': fingerprint_changed,
+                        'message': fp_message
+                    }
+                    
+                    # 高级关键词检查
+                    keyword_result = self._advanced_keyword_check_v2(html_content)
+                    results['methods']['keywords'] = keyword_result
+                    
+                    # 检查页面结构
+                    structure_result = self._analyze_page_structure(html_content)
+                    results['methods']['structure'] = structure_result
+                    
             except Exception as e:
-                results['methods']['dom'] = {'error': str(e)}
+                results['methods']['basic'] = {'error': str(e)}
+        
+        # 方法2: DOM检查
+        async def check_dom():
+            if self.dom_monitor and self.config.enable_selenium:
+                try:
+                    dom_status, dom_message, dom_info = await self.dom_monitor.check_stock_by_elements(url)
+                    results['methods']['dom'] = {
+                        'status': dom_status,
+                        'message': dom_message,
+                        'info': dom_info
+                    }
+                except Exception as e:
+                    results['methods']['dom'] = {'error': str(e)}
         
         # 方法3: API检查
-        if self.config.enable_api_discovery:
-            try:
-                api_endpoints = await self.api_monitor.discover_api_endpoints(url)
-                if api_endpoints:
-                    api_status, api_message = await self.api_monitor.check_api_stock(api_endpoints[0])
-                    results['methods']['api'] = {
-                        'status': api_status,
-                        'message': api_message,
-                        'endpoints': api_endpoints[:3]
-                    }
-            except Exception as e:
-                results['methods']['api'] = {'error': str(e)}
+        async def check_api():
+            if self.config.enable_api_discovery:
+                try:
+                    api_endpoints = await self.api_monitor.discover_api_endpoints(url)
+                    if api_endpoints:
+                        api_status, api_message = await self.api_monitor.check_api_stock(api_endpoints[0])
+                        results['methods']['api'] = {
+                            'status': api_status,
+                            'message': api_message,
+                            'endpoints': api_endpoints[:3]
+                        }
+                except Exception as e:
+                    results['methods']['api'] = {'error': str(e)}
         
-        # 综合判断
-        results['final_status'], results['confidence'] = self._make_final_decision(results['methods'])
+        # 并行执行所有检查
+        tasks = [check_page_content(), check_dom(), check_api()]
+        await asyncio.gather(*tasks)
+        
+        # 综合判断（优化版）
+        results['final_status'], results['confidence'], results['decision_reason'] = self._make_final_decision_v2(results['methods'])
         
         return results
     
-    def _advanced_keyword_check(self, content: str) -> Dict:
-        """改进的关键词检查，支持权重和优先级"""
+    def _advanced_keyword_check_v2(self, content: str) -> Dict:
+        """高级关键词检查（优化版）"""
         content_lower = content.lower()
         
-        # 高优先级的缺货关键词（权重更高）
-        high_priority_out_of_stock = [
-            ('sold out', 1.0),
-            ('out of stock', 1.0),
-            ('缺货', 1.0),
-            ('售罄', 1.0),
-            ('currently unavailable', 0.9),
-            ('not available', 0.9),
-            ('暂时缺货', 0.9),
-            ('temporarily out of stock', 0.9),
-            ('已售完', 0.9),
-            ('out-of-stock', 0.9),
-            ('unavailable', 0.8),
-            ('无货', 0.9),
-            ('断货', 0.9),
-            ('not in stock', 0.9),
-            ('no stock', 0.9),
-            ('无库存', 0.9),
-            ('stock: 0', 1.0),
-            ('库存: 0', 1.0),
-            ('暂无库存', 0.9),
-            ('等待补货', 0.8)
-        ]
-        
-        # 中低优先级的缺货关键词
-        low_priority_out_of_stock = [
-            ('补货中', 0.7),
-            ('缺货中', 0.7),
-            ('库存不足', 0.6),
-            ('刷新库存', 0.5),
-            ('库存刷新', 0.5)
-        ]
-        
-        # 有货关键词（带权重）
-        in_stock_keywords = [
-            ('add to cart', 0.8),
-            ('buy now', 0.8),
-            ('立即购买', 0.8),
-            ('加入购物车', 0.8),
-            ('in stock', 0.9),
-            ('有货', 0.9),
-            ('现货', 0.9),
-            ('available', 0.7),
-            ('order now', 0.8),
-            ('purchase', 0.6),
-            ('checkout', 0.6),
-            ('订购', 0.7),
-            ('下单', 0.7),
-            ('continue', 0.4),  # 降低continue的权重
-            ('繼續', 0.4),
-            ('configure', 0.5),
-            ('select options', 0.5),
-            ('configure now', 0.5),
-            ('create', 0.3),  # create权重很低
-            ('立即订购', 0.8),
-            ('马上购买', 0.8),
-            ('选择配置', 0.6)
-        ]
-        
-        # 上下文排除词（如果这些词出现在关键词附近，降低权重）
-        context_exclusions = ['disabled', 'false', 'unavailable', '不可用', '已禁用', 'grayed out']
-        
-        # 计算缺货得分
-        out_of_stock_score = 0
-        out_keywords_found = []
-        
-        for keyword, weight in high_priority_out_of_stock + low_priority_out_of_stock:
-            if keyword in content_lower:
-                # 检查上下文
-                context_penalty = self._check_context(content_lower, keyword, context_exclusions)
-                actual_weight = weight * (1 - context_penalty)
-                out_of_stock_score += actual_weight
-                out_keywords_found.append((keyword, actual_weight))
-        
-        # 计算有货得分
-        in_stock_score = 0
-        in_keywords_found = []
-        
-        for keyword, weight in in_stock_keywords:
-            if keyword in content_lower:
-                # 检查上下文
-                context_penalty = self._check_context(content_lower, keyword, context_exclusions)
-                actual_weight = weight * (1 - context_penalty)
-                in_stock_score += actual_weight
-                in_keywords_found.append((keyword, actual_weight))
-        
-        # 特殊规则：如果同时存在高优先级缺货关键词，直接判断为缺货
-        high_priority_out_found = any(
-            keyword in content_lower 
-            for keyword, _ in high_priority_out_of_stock
-        )
-        
-        if high_priority_out_found:
-            # 即使有"create"等关键词，也优先判断为缺货
-            return {
-                'status': False,
-                'confidence': min(0.9, out_of_stock_score / max(out_of_stock_score + in_stock_score, 1)),
-                'out_score': out_of_stock_score,
-                'in_score': in_stock_score,
-                'out_keywords': out_keywords_found,
-                'in_keywords': in_keywords_found,
-                'reason': 'high_priority_out_of_stock_found'
+        # 分层的关键词系统
+        keyword_layers = {
+            'critical_out_of_stock': {
+                'keywords': [
+                    ('out of stock', 1.0),
+                    ('sold out', 1.0),
+                    ('缺货', 1.0),
+                    ('售罄', 1.0),
+                    ('currently unavailable', 0.95),
+                    ('temporarily unavailable', 0.95),
+                    ('no longer available', 1.0),
+                    ('discontinued', 1.0),
+                    ('暂时缺货', 0.95),
+                    ('暂无库存', 0.95),
+                    ('库存不足', 0.9),
+                    ('无货', 1.0),
+                    ('断货', 1.0),
+                ],
+                'context_boost': ['title', 'h1', 'h2', 'alert', 'warning', 'error'],
+                'context_penalty': ['maybe', 'previous', 'was', 'history']
+            },
+            'moderate_out_of_stock': {
+                'keywords': [
+                    ('not available', 0.8),
+                    ('unavailable', 0.7),
+                    ('coming soon', 0.7),
+                    ('pre-order', 0.6),
+                    ('notify me', 0.7),
+                    ('waitlist', 0.7),
+                    ('join waiting list', 0.8),
+                    ('back in stock', 0.7),
+                    ('restock', 0.6),
+                    ('补货中', 0.7),
+                    ('即将上架', 0.7),
+                    ('敬请期待', 0.7),
+                    ('到货通知', 0.7),
+                ],
+                'context_boost': ['product', 'item', 'plan'],
+                'context_penalty': ['newsletter', 'blog', 'article']
+            },
+            'in_stock': {
+                'keywords': [
+                    ('add to cart', 0.9),
+                    ('buy now', 0.95),
+                    ('purchase now', 0.95),
+                    ('order now', 0.9),
+                    ('in stock', 0.95),
+                    ('available now', 0.95),
+                    ('立即购买', 0.95),
+                    ('加入购物车', 0.9),
+                    ('现在订购', 0.9),
+                    ('有货', 0.95),
+                    ('现货', 0.95),
+                    ('立即订购', 0.9),
+                    ('马上购买', 0.95),
+                ],
+                'context_boost': ['price', 'cost', '$', '¥', '€', 'plan', 'package'],
+                'context_penalty': ['demo', 'trial', 'example', 'documentation']
+            },
+            'ambiguous': {
+                'keywords': [
+                    ('available', 0.5),
+                    ('order', 0.4),
+                    ('get started', 0.4),
+                    ('configure', 0.4),
+                    ('continue', 0.3),
+                    ('create', 0.2),
+                    ('选择', 0.3),
+                    ('开始', 0.3),
+                ],
+                'context_boost': ['checkout', 'payment', 'billing'],
+                'context_penalty': ['login', 'register', 'account', 'support']
             }
+        }
         
-        # 综合判断
-        total_score = out_of_stock_score + in_stock_score
+        # 计算各层得分
+        layer_scores = {}
+        found_keywords = {}
         
-        if total_score == 0:
+        for layer_name, layer_config in keyword_layers.items():
+            layer_score = 0
+            layer_keywords = []
+            
+            for keyword, base_weight in layer_config['keywords']:
+                if keyword in content_lower:
+                    # 计算上下文权重
+                    context_weight = self._calculate_context_weight(
+                        content_lower, 
+                        keyword, 
+                        layer_config['context_boost'], 
+                        layer_config['context_penalty']
+                    )
+                    
+                    final_weight = base_weight * context_weight
+                    layer_score += final_weight
+                    layer_keywords.append((keyword, final_weight))
+            
+            layer_scores[layer_name] = layer_score
+            found_keywords[layer_name] = layer_keywords
+        
+        # 决策逻辑（优化版）
+        # 1. 如果有关键的缺货词且得分高
+        if layer_scores['critical_out_of_stock'] > 0.8:
+            # 检查是否同时有强烈的有货信号
+            if layer_scores['in_stock'] > layer_scores['critical_out_of_stock'] * 1.5:
+                # 可能是混合信号，需要更仔细判断
+                return {
+                    'status': None,
+                    'confidence': 0.5,
+                    'reason': 'mixed_signals',
+                    'details': {
+                        'out_score': layer_scores['critical_out_of_stock'],
+                        'in_score': layer_scores['in_stock'],
+                        'keywords': found_keywords
+                    }
+                }
+            else:
+                # 明确缺货
+                return {
+                    'status': False,
+                    'confidence': min(0.95, layer_scores['critical_out_of_stock'] / 1.0),
+                    'reason': 'critical_out_of_stock',
+                    'details': {
+                        'score': layer_scores['critical_out_of_stock'],
+                        'keywords': found_keywords['critical_out_of_stock']
+                    }
+                }
+        
+        # 2. 如果有中等缺货信号
+        if layer_scores['moderate_out_of_stock'] > 0.5:
+            total_out = layer_scores['critical_out_of_stock'] + layer_scores['moderate_out_of_stock']
+            if total_out > layer_scores['in_stock']:
+                return {
+                    'status': False,
+                    'confidence': min(0.8, total_out / 2.0),
+                    'reason': 'moderate_out_of_stock',
+                    'details': {
+                        'score': total_out,
+                        'keywords': found_keywords['moderate_out_of_stock']
+                    }
+                }
+        
+        # 3. 如果有明确的有货信号
+        if layer_scores['in_stock'] > 0.8:
+            # 确保没有强烈的缺货信号
+            total_out = layer_scores['critical_out_of_stock'] + layer_scores['moderate_out_of_stock']
+            if total_out < layer_scores['in_stock'] * 0.5:
+                return {
+                    'status': True,
+                    'confidence': min(0.9, layer_scores['in_stock'] / 1.0),
+                    'reason': 'clear_in_stock',
+                    'details': {
+                        'score': layer_scores['in_stock'],
+                        'keywords': found_keywords['in_stock']
+                    }
+                }
+        
+        # 4. 模糊情况
+        if layer_scores['ambiguous'] > 0:
+            # 需要其他方法辅助判断
             return {
                 'status': None,
-                'confidence': 0.0,
-                'out_score': 0,
-                'in_score': 0,
-                'reason': 'no_keywords_found'
+                'confidence': 0.3,
+                'reason': 'ambiguous_keywords',
+                'details': {
+                    'scores': layer_scores,
+                    'keywords': found_keywords
+                }
             }
         
-        # 计算置信度
-        score_diff = abs(out_of_stock_score - in_stock_score)
-        confidence = min(0.9, score_diff / total_score)
-        
-        # 如果缺货得分明显高于有货得分
-        if out_of_stock_score > in_stock_score * 1.2:  # 1.2倍阈值
-            return {
-                'status': False,
-                'confidence': confidence,
-                'out_score': out_of_stock_score,
-                'in_score': in_stock_score,
-                'out_keywords': out_keywords_found,
-                'in_keywords': in_keywords_found,
-                'reason': 'out_score_higher'
-            }
-        elif in_stock_score > out_of_stock_score * 1.5:  # 有货需要更高的阈值
-            return {
-                'status': True,
-                'confidence': confidence,
-                'out_score': out_of_stock_score,
-                'in_score': in_stock_score,
-                'out_keywords': out_keywords_found,
-                'in_keywords': in_keywords_found,
-                'reason': 'in_score_higher'
-            }
-        else:
-            # 分数接近时，倾向于判断为缺货（保守策略）
-            return {
-                'status': False,
-                'confidence': confidence * 0.5,  # 降低置信度
-                'out_score': out_of_stock_score,
-                'in_score': in_stock_score,
-                'out_keywords': out_keywords_found,
-                'in_keywords': in_keywords_found,
-                'reason': 'scores_close_default_out'
-            }
+        # 5. 没有找到关键词
+        return {
+            'status': None,
+            'confidence': 0.0,
+            'reason': 'no_keywords',
+            'details': {}
+        }
     
-    def _check_context(self, content: str, keyword: str, exclusions: List[str]) -> float:
-        """检查关键词的上下文，返回惩罚系数（0-1）"""
+    def _calculate_context_weight(self, content: str, keyword: str, 
+                                boost_words: List[str], penalty_words: List[str]) -> float:
+        """计算关键词的上下文权重"""
         keyword_pos = content.find(keyword)
         if keyword_pos == -1:
-            return 0
+            return 1.0
         
-        # 检查关键词前后50个字符
-        start = max(0, keyword_pos - 50)
-        end = min(len(content), keyword_pos + len(keyword) + 50)
-        context = content[start:end]
+        # 检查关键词前后100个字符的上下文
+        context_start = max(0, keyword_pos - 100)
+        context_end = min(len(content), keyword_pos + len(keyword) + 100)
+        context = content[context_start:context_end]
         
-        # 如果上下文中包含排除词，返回惩罚
-        for exclusion in exclusions:
-            if exclusion in context:
-                return 0.5  # 50%惩罚
+        weight = 1.0
         
-        return 0
+        # 检查增强词
+        for boost_word in boost_words:
+            if boost_word in context:
+                weight *= 1.2
+        
+        # 检查惩罚词
+        for penalty_word in penalty_words:
+            if penalty_word in context:
+                weight *= 0.7
+        
+        # 检查是否在重要标签中
+        # 简单检查是否在标题等标签附近
+        if any(tag in content[max(0, keyword_pos-50):keyword_pos] for tag in ['<h1', '<h2', '<title', '<alert']):
+            weight *= 1.3
+        
+        return min(2.0, max(0.3, weight))  # 限制权重范围
     
-    def _make_final_decision(self, methods: Dict) -> Tuple[Optional[bool], float]:
-        """基于多种方法的结果做出最终判断"""
-        votes = []
-        confidence_scores = []
+    def _analyze_page_structure(self, html: str) -> Dict:
+        """分析页面结构以辅助判断"""
+        structure_info = {
+            'is_product_page': False,
+            'has_price_info': False,
+            'has_buy_section': False,
+            'has_notification_form': False,
+            'page_type': 'unknown'
+        }
         
-        # DOM检查权重最高
+        html_lower = html.lower()
+        
+        # 检查是否是产品页面
+        product_indicators = [
+            'product-detail', 'product-info', 'product-page',
+            'item-detail', 'plan-detail', 'vps-plan',
+            'pricing', 'specifications', 'features'
+        ]
+        structure_info['is_product_page'] = any(indicator in html_lower for indicator in product_indicators)
+        
+        # 检查价格信息
+        price_patterns = [r'\$\d+', r'¥\d+', r'€\d+', r'/mo', r'/month', r'/year']
+        structure_info['has_price_info'] = any(re.search(pattern, html) for pattern in price_patterns)
+        
+        # 检查购买区域
+        buy_section_indicators = [
+            'add-to-cart', 'buy-button', 'purchase-section',
+            'order-form', 'checkout', 'shopping-cart'
+        ]
+        structure_info['has_buy_section'] = any(indicator in html_lower for indicator in buy_section_indicators)
+        
+        # 检查通知表单
+        notification_indicators = [
+            'notify-form', 'waitlist-form', 'email-notification',
+            'stock-alert', 'availability-notification'
+        ]
+        structure_info['has_notification_form'] = any(indicator in html_lower for indicator in notification_indicators)
+        
+        # 判断页面类型
+        if structure_info['has_notification_form']:
+            structure_info['page_type'] = 'out_of_stock_notification'
+        elif structure_info['is_product_page'] and structure_info['has_buy_section']:
+            structure_info['page_type'] = 'active_product'
+        elif structure_info['is_product_page']:
+            structure_info['page_type'] = 'product_no_buy'
+        
+        return structure_info
+    
+    def _make_final_decision_v2(self, methods: Dict) -> Tuple[Optional[bool], float, str]:
+        """基于多种方法的结果做出最终判断（优化版）"""
+        decision_factors = []
+        
+        # 1. DOM检查结果（最高权重）
         if 'dom' in methods and 'status' in methods['dom']:
-            status = methods['dom']['status']
-            if status is not None:
-                votes.append(status)
-                confidence_scores.append(0.9)
+            dom_status = methods['dom']['status']
+            if dom_status is not None:
+                decision_factors.append({
+                    'method': 'dom',
+                    'status': dom_status,
+                    'weight': 0.9,
+                    'confidence': 0.9,
+                    'message': methods['dom'].get('message', '')
+                })
         
-        # API检查权重次之
+        # 2. API检查结果（次高权重）
         if 'api' in methods and 'status' in methods['api']:
-            status = methods['api']['status']
-            if status is not None:
-                votes.append(status)
-                confidence_scores.append(0.8)
+            api_status = methods['api']['status']
+            if api_status is not None:
+                decision_factors.append({
+                    'method': 'api',
+                    'status': api_status,
+                    'weight': 0.85,
+                    'confidence': 0.85,
+                    'message': methods['api'].get('message', '')
+                })
         
-        # 改进的关键词检查
+        # 3. 关键词检查结果（动态权重）
         if 'keywords' in methods and 'status' in methods['keywords']:
-            status = methods['keywords']['status']
-            if status is not None:
-                # 如果是因为高优先级缺货关键词而判断的，提高权重
-                if methods['keywords'].get('reason') == 'high_priority_out_of_stock_found':
-                    confidence_scores.append(0.85)
-                else:
-                    confidence_scores.append(methods['keywords'].get('confidence', 0.5))
-                votes.append(status)
+            keyword_result = methods['keywords']
+            if keyword_result['status'] is not None:
+                # 根据原因调整权重
+                weight = 0.6  # 默认权重
+                if keyword_result['reason'] == 'critical_out_of_stock':
+                    weight = 0.8
+                elif keyword_result['reason'] == 'clear_in_stock':
+                    weight = 0.7
+                elif keyword_result['reason'] == 'ambiguous_keywords':
+                    weight = 0.4
+                
+                decision_factors.append({
+                    'method': 'keywords',
+                    'status': keyword_result['status'],
+                    'weight': weight,
+                    'confidence': keyword_result['confidence'],
+                    'message': keyword_result['reason']
+                })
         
-        # 页面变化检测
-        if methods.get('fingerprint', {}).get('changed'):
-            # 页面变化只是辅助信号，不直接参与投票
-            confidence_scores.append(0.2)
+        # 4. 页面结构分析（辅助）
+        if 'structure' in methods:
+            structure = methods['structure']
+            if structure['page_type'] == 'out_of_stock_notification':
+                decision_factors.append({
+                    'method': 'structure',
+                    'status': False,
+                    'weight': 0.7,
+                    'confidence': 0.8,
+                    'message': 'detected_notification_page'
+                })
+            elif structure['page_type'] == 'active_product':
+                decision_factors.append({
+                    'method': 'structure',
+                    'status': True,
+                    'weight': 0.5,
+                    'confidence': 0.6,
+                    'message': 'active_product_page'
+                })
         
-        if not votes:
-            return None, 0.0
+        # 如果没有任何判断因素
+        if not decision_factors:
+            return None, 0.0, 'no_detection_methods_succeeded'
         
-        # 特殊规则：如果关键词检查发现高优先级缺货词，且没有其他方法明确说有货
-        if ('keywords' in methods and 
-            methods['keywords'].get('reason') == 'high_priority_out_of_stock_found' and
-            methods['keywords'].get('status') is False):
+        # 智能决策算法
+        # 1. 检查是否有高置信度的一致结果
+        high_confidence_factors = [f for f in decision_factors if f['confidence'] >= 0.8]
+        if high_confidence_factors:
+            # 检查是否一致
+            statuses = [f['status'] for f in high_confidence_factors]
+            if all(s == statuses[0] for s in statuses):
+                # 高置信度一致结果
+                total_weight = sum(f['weight'] * f['confidence'] for f in high_confidence_factors)
+                avg_confidence = total_weight / sum(f['weight'] for f in high_confidence_factors)
+                return statuses[0], min(0.95, avg_confidence), 'high_confidence_consensus'
+        
+        # 2. 加权投票
+        in_stock_score = 0
+        out_of_stock_score = 0
+        total_weight = 0
+        
+        for factor in decision_factors:
+            weight = factor['weight'] * factor['confidence']
+            total_weight += factor['weight']
             
-            # 检查是否有其他方法明确说有货
-            other_in_stock = any(
-                vote for i, vote in enumerate(votes)
-                if vote and i < len(confidence_scores) and confidence_scores[i] > 0.8
-            )
-            
-            if not other_in_stock:
-                # 直接返回缺货
-                return False, 0.85
+            if factor['status'] is True:
+                in_stock_score += weight
+            elif factor['status'] is False:
+                out_of_stock_score += weight
         
-        # 加权投票
-        weighted_sum = sum(
-            (1 if vote else -1) * confidence
-            for vote, confidence in zip(votes, confidence_scores[:len(votes)])
-        )
+        # 3. 特殊规则
+        # 如果DOM明确说缺货，而其他方法说有货，倾向于相信DOM
+        dom_factor = next((f for f in decision_factors if f['method'] == 'dom'), None)
+        if dom_factor and dom_factor['status'] is False and dom_factor['confidence'] >= 0.8:
+            if out_of_stock_score < in_stock_score:
+                # DOM说缺货但其他说有货，提高缺货权重
+                out_of_stock_score *= 1.5
         
-        total_confidence = sum(confidence_scores[:len(votes)])
+        # 4. 最终决策
+        if total_weight == 0:
+            return None, 0.0, 'no_valid_weights'
         
-        if weighted_sum > 0:
-            final_status = True
-        elif weighted_sum < 0:
-            final_status = False
+        score_diff = abs(in_stock_score - out_of_stock_score)
+        confidence = min(0.95, score_diff / total_weight)
+        
+        # 需要明显的差异才做出判断
+        threshold = total_weight * 0.2  # 20%的差异阈值
+        
+        if out_of_stock_score > in_stock_score + threshold:
+            return False, confidence, f'out_of_stock_score_higher({out_of_stock_score:.2f}>{in_stock_score:.2f})'
+        elif in_stock_score > out_of_stock_score + threshold:
+            return True, confidence, f'in_stock_score_higher({in_stock_score:.2f}>{out_of_stock_score:.2f})'
         else:
-            # 平票时，倾向于保守判断（缺货）
-            final_status = False
-        
-        # 计算最终置信度
-        if total_confidence > 0:
-            final_confidence = abs(weighted_sum) / total_confidence
-            # 根据投票一致性调整置信度
-            vote_consistency = sum(1 for v in votes if v == final_status) / len(votes)
-            final_confidence = min(final_confidence * (0.5 + 0.5 * vote_consistency), 0.95)
-        else:
-            final_confidence = 0.0
-        
-        return final_status, final_confidence
+            # 分数接近，使用保守策略
+            if out_of_stock_score > in_stock_score:
+                return False, confidence * 0.7, 'scores_close_lean_out_of_stock'
+            else:
+                return None, confidence * 0.5, 'scores_too_close'
     
     def close(self):
         """关闭监控器"""
         if self.dom_monitor:
             self.dom_monitor.close()
+        # 清理缓存
+        self.recent_checks.clear()
+
+    import re
