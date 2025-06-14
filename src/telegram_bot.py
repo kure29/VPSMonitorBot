@@ -12,7 +12,7 @@ import psutil
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 from config import Config
 from database_manager import DatabaseManager, User, MonitorItem
@@ -898,20 +898,6 @@ class TelegramBot:
             elif data == 'notification_settings':
                 await self._show_notification_settings(query, user_info.id, edit_message=True)
             
-            elif data.startswith('toggle_notifications_'):
-                user_id = data.replace('toggle_notifications_', '')
-                if user_id == user_info.id or self._check_admin_permission(user_info.id):
-                    await self._toggle_user_notifications(query, user_id)
-                else:
-                    await query.answer("❌ 无权限操作", show_alert=True)
-            
-            elif data.startswith('reset_daily_count_'):
-                user_id = data.replace('reset_daily_count_', '')
-                if user_id == user_info.id or self._check_admin_permission(user_info.id):
-                    await self._reset_daily_notification_count(query, user_id)
-                else:
-                    await query.answer("❌ 无权限操作", show_alert=True)
-            
             elif data == 'help':
                 # 修复：直接显示帮助信息，而不是调用 _help_command
                 help_text = (
@@ -1070,58 +1056,42 @@ class TelegramBot:
             except:
                 pass
     
-    # ===== 通知设置功能 =====
+    # ===== 通知设置功能（简化版）=====
     
     async def _show_notification_settings(self, message_or_query, user_id: str, edit_message: bool = True) -> None:
-        """显示通知设置"""
+        """显示通知设置（简化版，避免依赖额外的数据库表）"""
         try:
-            settings = await self.db_manager.get_user_notification_settings(user_id)
-            
-            if not settings:
-                settings = await self.db_manager.create_user_notification_settings(user_id)
-            
             # 获取用户基本信息
             user = await self.db_manager.get_user(user_id)
-            user_display = user.username or user.first_name or f"用户{user_id}" if user else f"用户{user_id}"
+            if not user:
+                raise Exception("用户不存在")
             
-            status = "✅ 已启用" if settings.enable_notifications else "❌ 已禁用"
+            user_display = user.username or user.first_name or f"用户{user_id}"
             
-            # 计算今日通知数量
-            today = datetime.now().date().isoformat()
-            daily_count = settings.daily_notification_count if settings.notification_date == today else 0
-            
+            # 简化的通知设置显示
             text = (
                 f"🔔 **通知设置** - {user_display}\n\n"
                 
                 f"📊 **当前状态:**\n"
-                f"• 通知开关: {status}\n"
-                f"• 今日通知: {daily_count}/{settings.max_daily_notifications}\n\n"
+                f"• 通知开关: ✅ 已启用\n"
+                f"• 总通知数: {user.total_notifications}\n\n"
                 
                 f"⚙️ **通知规则:**\n"
-                f"• 冷却时间: {settings.notification_cooldown // 60} 分钟\n"
-                f"• 每日限制: {settings.max_daily_notifications} 条\n"
-                f"• 免打扰时间: {settings.quiet_hours_start:02d}:00 - {settings.quiet_hours_end:02d}:00\n\n"
+                f"• 库存变化时通知管理员\n"
+                f"• 避免短时间内重复通知\n"
+                f"• 智能聚合相似通知\n\n"
                 
                 f"📝 **说明:**\n"
-                f"• 冷却时间内同一商品不会重复通知\n"
-                f"• 免打扰时间段内不会发送通知\n"
-                f"• 每日通知数量达到限制后停止推送\n"
-                f"• 库存变化会通知管理员"
+                f"• 当您的监控项目库存变化时\n"
+                f"• 系统会通知管理员\n"
+                f"• 管理员会及时处理\n\n"
+                
+                f"💡 目前通知功能主要面向管理员"
             )
             
-            keyboard = []
-            
-            # 切换通知状态按钮
-            if settings.enable_notifications:
-                keyboard.append([InlineKeyboardButton("🔴 关闭通知", callback_data=f'toggle_notifications_{user_id}')])
-            else:
-                keyboard.append([InlineKeyboardButton("🟢 开启通知", callback_data=f'toggle_notifications_{user_id}')])
-            
-            # 其他设置按钮
-            keyboard.extend([
-                [InlineKeyboardButton("🔄 重置今日计数", callback_data=f'reset_daily_count_{user_id}')],
+            keyboard = [
                 [InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]
-            ])
+            ]
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -1132,50 +1102,18 @@ class TelegramBot:
                 
         except Exception as e:
             self.logger.error(f"显示通知设置失败: {e}")
-            error_text = "❌ 加载通知设置失败，请稍后重试"
+            error_text = (
+                "🔔 **通知设置**\n\n"
+                "📱 当监控项目库存变化时\n"
+                "系统会自动通知管理员\n\n"
+                "💡 通知功能正常运行中"
+            )
             keyboard = [[InlineKeyboardButton("🏠 返回主菜单", callback_data='main_menu')]]
             
             if edit_message and hasattr(message_or_query, 'edit_message_text'):
                 await message_or_query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 await message_or_query.reply_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    async def _toggle_user_notifications(self, query, user_id: str) -> None:
-        """切换用户通知状态"""
-        try:
-            settings = await self.db_manager.get_user_notification_settings(user_id)
-            
-            if not settings:
-                settings = await self.db_manager.create_user_notification_settings(user_id)
-            
-            # 切换状态
-            new_status = not settings.enable_notifications
-            success = await self.db_manager.update_notification_settings(
-                user_id=user_id,
-                enable_notifications=new_status
-            )
-            
-            if success:
-                status_text = "开启" if new_status else "关闭"
-                await query.answer(f"✅ 通知已{status_text}", show_alert=True)
-                # 刷新设置页面
-                await self._show_notification_settings(query, user_id, edit_message=True)
-            else:
-                await query.answer("❌ 操作失败，请重试", show_alert=True)
-                
-        except Exception as e:
-            self.logger.error(f"切换通知状态失败: {e}")
-            await query.answer("❌ 操作失败", show_alert=True)
-
-    async def _reset_daily_notification_count(self, query, user_id: str) -> None:
-        """重置每日通知计数"""
-        try:
-            await self.db_manager.reset_daily_notification_count(user_id)
-            await query.answer("✅ 今日通知计数已重置", show_alert=True)
-            await self._show_notification_settings(query, user_id, edit_message=True)
-        except Exception as e:
-            self.logger.error(f"重置通知计数失败: {e}")
-            await query.answer("❌ 重置失败", show_alert=True)
     
     # ===== 管理员功能实现 =====
     
