@@ -1,560 +1,337 @@
 #!/usr/bin/env python3
 """
-VPS监控系统 - 服务商优化模块
-作者: kure29
-网站: https://kure29.com
-
-专门针对各大VPS服务商的优化检测模块
-支持的服务商：DMIT、RackNerd、BandwagonHost、CloudCone等
+供应商特定优化模块
+VPS监控系统 v3.1
 """
 
-import re
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-
-
-class VendorInfo:
-    """服务商信息"""
-    
-    # 支持的服务商信息
-    VENDORS = {
-        'dmit': {
-            'name': 'DMIT',
-            'full_name': 'DMIT Network',
-            'website': 'https://www.dmit.io',
-            'description': '高端网络服务提供商，专注亚洲优化线路',
-            'keywords': ['dmit', 'dmit.io'],
-            'out_of_stock_patterns': [
-                '缺货中', '刷新库存', 'refresh stock', '暂无库存',
-                'out of stock', 'sold out'
-            ],
-            'in_stock_patterns': [
-                '立即订购', '配置选项', 'order now', 'configure',
-                'add to cart', 'buy now'
-            ]
-        },
-        'racknerd': {
-            'name': 'RackNerd',
-            'full_name': 'RackNerd LLC',
-            'website': 'https://racknerd.com',
-            'description': '美国VPS提供商，价格实惠',
-            'keywords': ['racknerd', 'racknerd.com'],
-            'out_of_stock_patterns': [
-                'Out of Stock', 'Sold Out', 'unavailable',
-                'not available', 'temporarily unavailable'
-            ],
-            'in_stock_patterns': [
-                'Order Now', 'Add to Cart', 'Configure',
-                'Select', 'Choose Plan'
-            ]
-        },
-        'bandwagonhost': {
-            'name': 'BandwagonHost',
-            'full_name': 'BandwagonHost (BWH)',
-            'website': 'https://bandwagonhost.com',
-            'description': '知名VPS提供商，CN2线路',
-            'keywords': ['bandwagonhost', 'bwh', 'justhost'],
-            'out_of_stock_patterns': [
-                'Out of stock', 'Sold out', 'Not available',
-                'Currently unavailable'
-            ],
-            'in_stock_patterns': [
-                'Add to cart', 'Order', 'Purchase',
-                'Buy now', 'Select'
-            ]
-        },
-        'cloudcone': {
-            'name': 'CloudCone',
-            'full_name': 'CloudCone LLC',
-            'website': 'https://cloudcone.com',
-            'description': '美西VPS提供商',
-            'keywords': ['cloudcone', 'cloudcone.com'],
-            'out_of_stock_patterns': [
-                'Out of Stock', 'Sold Out', 'Unavailable'
-            ],
-            'in_stock_patterns': [
-                'Order Now', 'Add to Cart', 'Deploy'
-            ]
-        },
-        'vultr': {
-            'name': 'Vultr',
-            'full_name': 'Vultr Holdings LLC',
-            'website': 'https://vultr.com',
-            'description': '全球云服务提供商',
-            'keywords': ['vultr', 'vultr.com'],
-            'out_of_stock_patterns': [
-                'Out of Stock', 'Unavailable', 'Not Available'
-            ],
-            'in_stock_patterns': [
-                'Deploy', 'Deploy Now', 'Create Instance'
-            ]
-        },
-        'linode': {
-            'name': 'Linode',
-            'full_name': 'Linode LLC',
-            'website': 'https://linode.com',
-            'description': 'Linux云服务提供商',
-            'keywords': ['linode', 'linode.com'],
-            'out_of_stock_patterns': [
-                'Out of Stock', 'Unavailable'
-            ],
-            'in_stock_patterns': [
-                'Create', 'Deploy', 'Launch'
-            ]
-        }
-    }
-    
-    @classmethod
-    def get_vendor_by_url(cls, url: str) -> Optional[str]:
-        """根据URL识别服务商"""
-        url_lower = url.lower()
-        
-        for vendor_key, vendor_info in cls.VENDORS.items():
-            for keyword in vendor_info['keywords']:
-                if keyword in url_lower:
-                    return vendor_key
-        
-        return None
-    
-    @classmethod
-    def get_vendor_info(cls, vendor_key: str) -> Optional[Dict]:
-        """获取服务商信息"""
-        return cls.VENDORS.get(vendor_key)
-    
-    @classmethod
-    def get_all_vendors(cls) -> Dict:
-        """获取所有服务商信息"""
-        return cls.VENDORS
+from selenium.common.exceptions import NoSuchElementException
 
 
 class VendorOptimizer:
-    """服务商优化检测器"""
+    """供应商特定优化器"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        
+        # 供应商特定的检查规则
+        self.vendor_rules = {
+            'dmit.io': self._check_dmit,
+            'racknerd.com': self._check_racknerd,
+            'bandwagonhost.com': self._check_bandwagon,
+            'virmach.com': self._check_virmach,
+            'hostdare.com': self._check_hostdare,
+            'hosthatch.com': self._check_hosthatch,
+            'greencloudvps.com': self._check_greencloud
+        }
     
     def check_vendor_specific(self, driver, url: str) -> Dict:
-        """服务商特定检查"""
-        vendor_key = VendorInfo.get_vendor_by_url(url)
+        """执行供应商特定检查"""
+        # 从URL中提取域名
+        domain = self._extract_domain(url)
         
-        if not vendor_key:
-            return {'status': None, 'message': '未识别的服务商，使用通用检测'}
+        # 查找对应的检查函数
+        for vendor_domain, check_func in self.vendor_rules.items():
+            if vendor_domain in domain:
+                try:
+                    result = check_func(driver)
+                    if result['status'] is not None:
+                        self.logger.info(f"供应商优化检查 ({vendor_domain}): {result['message']}")
+                    return result
+                except Exception as e:
+                    self.logger.error(f"供应商检查失败 ({vendor_domain}): {e}")
+                    return {'status': None, 'message': f'供应商检查失败: {str(e)}'}
         
-        vendor_info = VendorInfo.get_vendor_info(vendor_key)
-        self.logger.info(f"检测到服务商: {vendor_info['name']}")
-        
-        try:
-            # 根据服务商类型调用相应的检查方法
-            if vendor_key == 'dmit':
-                return self._check_dmit(driver, vendor_info)
-            elif vendor_key == 'racknerd':
-                return self._check_racknerd(driver, vendor_info)
-            elif vendor_key == 'bandwagonhost':
-                return self._check_bandwagonhost(driver, vendor_info)
-            elif vendor_key == 'cloudcone':
-                return self._check_cloudcone(driver, vendor_info)
-            elif vendor_key == 'vultr':
-                return self._check_vultr(driver, vendor_info)
-            elif vendor_key == 'linode':
-                return self._check_linode(driver, vendor_info)
-            else:
-                return self._check_generic(driver, vendor_info)
-                
-        except Exception as e:
-            self.logger.error(f"服务商特定检查失败: {e}")
-            return {'status': None, 'message': f'检查失败: {str(e)}'}
+        # 没有找到特定规则
+        return {'status': None, 'message': '无供应商特定规则'}
     
-    def _check_dmit(self, driver, vendor_info: Dict) -> Dict:
+    def _extract_domain(self, url: str) -> str:
+        """从URL提取域名"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            return parsed.netloc.lower()
+        except:
+            return url.lower()
+    
+    def _check_dmit(self, driver) -> Dict:
         """DMIT特定检查"""
         try:
-            # DMIT特有的缺货标识
-            out_selectors = [
-                "//*[contains(text(), '缺货中')]",
-                "//*[contains(text(), '刷新库存')]", 
-                "//*[contains(text(), 'refresh stock')]",
-                "//*[contains(text(), '暂无库存')]",
-                ".out-of-stock",
-                ".stock-refresh",
-                "//*[contains(@class, 'stock-status') and contains(text(), '缺货')]"
-            ]
+            # 检查页面标题
+            page_title = driver.title.lower()
             
-            for selector in out_selectors:
-                try:
-                    if selector.startswith('//'):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and any(el.is_displayed() for el in elements):
-                        return {
-                            'status': False,
-                            'message': f'DMIT页面显示缺货: {elements[0].text}',
-                            'vendor': vendor_info['name']
-                        }
-                except:
-                    continue
+            # DMIT的缺货页面特征
+            if 'out of stock' in page_title:
+                return {
+                    'status': False,
+                    'message': 'DMIT页面标题显示缺货'
+                }
             
-            # DMIT有货检查
-            in_selectors = [
-                "//*[contains(text(), '立即订购')]",
-                "//*[contains(text(), '配置选项')]",
-                "//*[contains(text(), 'order now')]",
-                "//*[contains(text(), 'configure')]",
-                "button[type='submit']:not([disabled])",
-                ".btn-primary:not([disabled])",
-                ".order-button:not([disabled])"
-            ]
+            # 检查主要内容区域
+            try:
+                # 查找主要内容容器
+                main_content_selectors = [
+                    ".main-content", "#main", ".content", ".page-content",
+                    "main", "article", ".container"
+                ]
+                
+                for selector in main_content_selectors:
+                    try:
+                        if selector.startswith('.') or selector.startswith('#'):
+                            content_element = driver.find_element(By.CSS_SELECTOR, selector)
+                        else:
+                            content_element = driver.find_element(By.TAG_NAME, selector)
+                        
+                        content_text = content_element.text.lower()
+                        
+                        # 检查是否包含明确的缺货信息
+                        if ('out of stock' in content_text and 
+                            'currently out of stock' in content_text):
+                            return {
+                                'status': False,
+                                'message': 'DMIT内容区域显示缺货'
+                            }
+                        
+                        # 检查是否是产品配置页面
+                        if all(keyword in content_text for keyword in ['configure', 'price', 'order']):
+                            # 检查是否有可选择的配置选项
+                            config_selectors = [
+                                "select", "input[type='radio']", ".config-option",
+                                ".product-option", "[name='configoption']"
+                            ]
+                            
+                            for config_sel in config_selectors:
+                                config_elements = driver.find_elements(By.CSS_SELECTOR, config_sel)
+                                if config_elements and any(el.is_enabled() for el in config_elements):
+                                    return {
+                                        'status': True,
+                                        'message': 'DMIT产品配置页面，有可选配置项'
+                                    }
+                        
+                        break  # 找到内容区域就停止
+                    except:
+                        continue
+            except Exception as e:
+                self.logger.debug(f"DMIT内容检查异常: {e}")
             
-            for selector in in_selectors:
-                try:
-                    if selector.startswith('//'):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and any(el.is_displayed() and el.is_enabled() for el in elements):
-                        return {
-                            'status': True,
-                            'message': f'DMIT页面显示可购买: {elements[0].text}',
-                            'vendor': vendor_info['name']
-                        }
-                except:
-                    continue
+            # 检查购物车页面特定元素
+            if 'cart.php' in driver.current_url:
+                # 检查是否有"Continue"或"Create"按钮但同时有缺货提示
+                out_of_stock_messages = driver.find_elements(
+                    By.XPATH, 
+                    "//*[contains(text(), 'out of stock') or contains(text(), 'currently out of stock')]"
+                )
+                
+                if out_of_stock_messages and any(msg.is_displayed() for msg in out_of_stock_messages):
+                    return {
+                        'status': False,
+                        'message': 'DMIT购物车页面显示缺货信息'
+                    }
+                
+                # 检查是否有产品配置表单
+                form_elements = driver.find_elements(By.CSS_SELECTOR, "form#frmConfigureProduct")
+                if form_elements:
+                    return {
+                        'status': True,
+                        'message': 'DMIT购物车有产品配置表单'
+                    }
             
-            return {
-                'status': None, 
-                'message': 'DMIT页面状态不明确',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': 'DMIT检查无法确定状态'}
             
         except Exception as e:
-            return {
-                'status': None, 
-                'message': f'DMIT检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': f'DMIT检查异常: {str(e)}'}
     
-    def _check_racknerd(self, driver, vendor_info: Dict) -> Dict:
+    def _check_racknerd(self, driver) -> Dict:
         """RackNerd特定检查"""
         try:
-            # RackNerd缺货检查
-            out_selectors = [
-                "//*[contains(text(), 'Out of Stock')]",
-                "//*[contains(text(), 'Sold Out')]",
-                "//*[contains(text(), 'Unavailable')]",
-                ".out-of-stock",
-                ".sold-out"
-            ]
+            # RackNerd的缺货通常显示"Sold Out"按钮
+            sold_out_buttons = driver.find_elements(
+                By.XPATH, 
+                "//button[contains(text(), 'Sold Out')] | //a[contains(text(), 'Sold Out')]"
+            )
             
-            for selector in out_selectors:
-                try:
-                    if selector.startswith('//'):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and any(el.is_displayed() for el in elements):
-                        return {
-                            'status': False,
-                            'message': f'RackNerd显示缺货: {elements[0].text}',
-                            'vendor': vendor_info['name']
-                        }
-                except:
-                    continue
-            
-            # RackNerd有货检查
-            in_selectors = [
-                "//*[contains(text(), 'Order Now')]",
-                "//*[contains(text(), 'Add to Cart')]",
-                "//*[contains(text(), 'Configure')]",
-                ".btn-order",
-                ".order-button",
-                ".add-to-cart"
-            ]
-            
-            for selector in in_selectors:
-                try:
-                    if selector.startswith('//'):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and any(el.is_displayed() and el.is_enabled() for el in elements):
-                        return {
-                            'status': True,
-                            'message': f'RackNerd显示可订购: {elements[0].text}',
-                            'vendor': vendor_info['name']
-                        }
-                except:
-                    continue
-            
-            return {
-                'status': None,
-                'message': 'RackNerd状态不明确',
-                'vendor': vendor_info['name']
-            }
-            
-        except Exception as e:
-            return {
-                'status': None,
-                'message': f'RackNerd检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
-    
-    def _check_bandwagonhost(self, driver, vendor_info: Dict) -> Dict:
-        """BandwagonHost特定检查"""
-        try:
-            # BWH缺货检查
-            out_selectors = [
-                "//*[contains(text(), 'Out of stock')]",
-                "//*[contains(text(), 'Sold out')]",
-                "//*[contains(text(), 'Not available')]",
-                ".out-of-stock",
-                ".sold-out"
-            ]
-            
-            for selector in out_selectors:
-                try:
-                    if selector.startswith('//'):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and any(el.is_displayed() for el in elements):
-                        return {
-                            'status': False,
-                            'message': f'BWH显示缺货: {elements[0].text}',
-                            'vendor': vendor_info['name']
-                        }
-                except:
-                    continue
-            
-            # BWH有货检查
-            in_selectors = [
-                "//*[contains(text(), 'Add to cart')]",
-                "//*[contains(text(), 'Order')]",
-                "//*[contains(text(), 'Purchase')]",
-                ".cart-add-button",
-                ".order-button"
-            ]
-            
-            for selector in in_selectors:
-                try:
-                    if selector.startswith('//'):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and any(el.is_displayed() and el.is_enabled() for el in elements):
-                        return {
-                            'status': True,
-                            'message': f'BWH显示可购买: {elements[0].text}',
-                            'vendor': vendor_info['name']
-                        }
-                except:
-                    continue
-            
-            return {
-                'status': None,
-                'message': 'BWH状态不明确',
-                'vendor': vendor_info['name']
-            }
-            
-        except Exception as e:
-            return {
-                'status': None,
-                'message': f'BWH检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
-    
-    def _check_cloudcone(self, driver, vendor_info: Dict) -> Dict:
-        """CloudCone特定检查"""
-        try:
-            # CloudCone缺货检查
-            if self._find_text_elements(driver, vendor_info['out_of_stock_patterns']):
+            if sold_out_buttons and any(btn.is_displayed() for btn in sold_out_buttons):
                 return {
                     'status': False,
-                    'message': 'CloudCone显示缺货',
-                    'vendor': vendor_info['name']
+                    'message': 'RackNerd显示Sold Out按钮'
                 }
             
-            # CloudCone有货检查
-            if self._find_text_elements(driver, vendor_info['in_stock_patterns']):
+            # 检查Order Now按钮
+            order_buttons = driver.find_elements(
+                By.XPATH,
+                "//a[contains(text(), 'Order Now')] | //button[contains(text(), 'Order Now')]"
+            )
+            
+            if order_buttons and any(btn.is_displayed() and btn.is_enabled() for btn in order_buttons):
                 return {
                     'status': True,
-                    'message': 'CloudCone显示可订购',
-                    'vendor': vendor_info['name']
+                    'message': 'RackNerd有可用的Order Now按钮'
                 }
             
-            return {
-                'status': None,
-                'message': 'CloudCone状态不明确',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': 'RackNerd检查无法确定状态'}
             
         except Exception as e:
-            return {
-                'status': None,
-                'message': f'CloudCone检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': f'RackNerd检查异常: {str(e)}'}
     
-    def _check_vultr(self, driver, vendor_info: Dict) -> Dict:
-        """Vultr特定检查"""
+    def _check_bandwagon(self, driver) -> Dict:
+        """搬瓦工特定检查"""
         try:
-            # Vultr缺货检查
-            if self._find_text_elements(driver, vendor_info['out_of_stock_patterns']):
+            # 搬瓦工缺货时会显示"Out of Stock"
+            out_of_stock = driver.find_elements(
+                By.XPATH,
+                "//*[contains(@class, 'out-of-stock')] | //*[contains(text(), 'Out of Stock')]"
+            )
+            
+            if out_of_stock and any(el.is_displayed() for el in out_of_stock):
                 return {
                     'status': False,
-                    'message': 'Vultr显示缺货',
-                    'vendor': vendor_info['name']
+                    'message': '搬瓦工显示Out of Stock'
                 }
             
-            # Vultr有货检查
-            if self._find_text_elements(driver, vendor_info['in_stock_patterns']):
+            # 检查"Order Now"链接
+            order_links = driver.find_elements(
+                By.XPATH,
+                "//a[contains(@href, 'order')] | //a[contains(text(), 'Order')]"
+            )
+            
+            if order_links and any(link.is_displayed() and link.is_enabled() for link in order_links):
                 return {
                     'status': True,
-                    'message': 'Vultr显示可部署',
-                    'vendor': vendor_info['name']
+                    'message': '搬瓦工有可用的订购链接'
                 }
             
-            return {
-                'status': None,
-                'message': 'Vultr状态不明确',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': '搬瓦工检查无法确定状态'}
             
         except Exception as e:
-            return {
-                'status': None,
-                'message': f'Vultr检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': f'搬瓦工检查异常: {str(e)}'}
     
-    def _check_linode(self, driver, vendor_info: Dict) -> Dict:
-        """Linode特定检查"""
+    def _check_virmach(self, driver) -> Dict:
+        """VirMach特定检查"""
         try:
-            # Linode缺货检查
-            if self._find_text_elements(driver, vendor_info['out_of_stock_patterns']):
+            # VirMach缺货时按钮会变成"Unavailable"
+            unavailable = driver.find_elements(
+                By.XPATH,
+                "//button[contains(text(), 'Unavailable')] | //a[contains(text(), 'Unavailable')]"
+            )
+            
+            if unavailable and any(el.is_displayed() for el in unavailable):
                 return {
                     'status': False,
-                    'message': 'Linode显示缺货',
-                    'vendor': vendor_info['name']
+                    'message': 'VirMach显示Unavailable'
                 }
             
-            # Linode有货检查
-            if self._find_text_elements(driver, vendor_info['in_stock_patterns']):
+            # 检查"Order"按钮
+            order_buttons = driver.find_elements(
+                By.XPATH,
+                "//button[contains(text(), 'Order')] | //a[contains(@class, 'order')]"
+            )
+            
+            if order_buttons and any(btn.is_displayed() and btn.is_enabled() for btn in order_buttons):
                 return {
                     'status': True,
-                    'message': 'Linode显示可创建',
-                    'vendor': vendor_info['name']
+                    'message': 'VirMach有可用的Order按钮'
                 }
             
-            return {
-                'status': None,
-                'message': 'Linode状态不明确',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': 'VirMach检查无法确定状态'}
             
         except Exception as e:
-            return {
-                'status': None,
-                'message': f'Linode检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': f'VirMach检查异常: {str(e)}'}
     
-    def _check_generic(self, driver, vendor_info: Dict) -> Dict:
-        """通用检查（基于服务商信息中的关键词）"""
+    def _check_hostdare(self, driver) -> Dict:
+        """HostDare特定检查"""
         try:
-            # 检查缺货
-            if self._find_text_elements(driver, vendor_info['out_of_stock_patterns']):
+            # HostDare使用WHMCS，检查产品状态
+            unavailable_text = driver.find_elements(
+                By.XPATH,
+                "//*[contains(text(), '暂时缺货')] | //*[contains(text(), 'Currently Unavailable')]"
+            )
+            
+            if unavailable_text and any(el.is_displayed() for el in unavailable_text):
                 return {
                     'status': False,
-                    'message': f'{vendor_info["name"]}显示缺货',
-                    'vendor': vendor_info['name']
+                    'message': 'HostDare显示暂时缺货'
                 }
             
-            # 检查有货
-            if self._find_text_elements(driver, vendor_info['in_stock_patterns']):
+            # 检查"立即订购"按钮
+            order_buttons = driver.find_elements(
+                By.XPATH,
+                "//a[contains(text(), '立即订购')] | //a[contains(text(), 'Order Now')]"
+            )
+            
+            if order_buttons and any(btn.is_displayed() and btn.is_enabled() for btn in order_buttons):
                 return {
                     'status': True,
-                    'message': f'{vendor_info["name"]}显示可购买',
-                    'vendor': vendor_info['name']
+                    'message': 'HostDare有可用的订购按钮'
                 }
             
-            return {
-                'status': None,
-                'message': f'{vendor_info["name"]}状态不明确',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': 'HostDare检查无法确定状态'}
             
         except Exception as e:
-            return {
-                'status': None,
-                'message': f'{vendor_info["name"]}检查失败: {str(e)}',
-                'vendor': vendor_info['name']
-            }
+            return {'status': None, 'message': f'HostDare检查异常: {str(e)}'}
     
-    def _find_text_elements(self, driver, patterns: List[str]) -> bool:
-        """查找包含特定文本的元素"""
-        for pattern in patterns:
-            try:
-                xpath = f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern.lower()}')]"
-                elements = driver.find_elements(By.XPATH, xpath)
-                if elements and any(el.is_displayed() for el in elements):
-                    return True
-            except:
-                continue
-        return False
+    def _check_hosthatch(self, driver) -> Dict:
+        """HostHatch特定检查"""
+        try:
+            # HostHatch缺货时显示"Out of Stock"标签
+            stock_badges = driver.find_elements(
+                By.XPATH,
+                "//*[contains(@class, 'badge')] | //*[contains(@class, 'label')]"
+            )
+            
+            for badge in stock_badges:
+                if badge.is_displayed() and 'out of stock' in badge.text.lower():
+                    return {
+                        'status': False,
+                        'message': 'HostHatch显示Out of Stock标签'
+                    }
+            
+            # 检查购买按钮
+            buy_buttons = driver.find_elements(
+                By.XPATH,
+                "//a[contains(@href, 'billing')] | //button[contains(text(), 'Order')]"
+            )
+            
+            if buy_buttons and any(btn.is_displayed() and btn.is_enabled() for btn in buy_buttons):
+                return {
+                    'status': True,
+                    'message': 'HostHatch有可用的购买按钮'
+                }
+            
+            return {'status': None, 'message': 'HostHatch检查无法确定状态'}
+            
+        except Exception as e:
+            return {'status': None, 'message': f'HostHatch检查异常: {str(e)}'}
     
-    def get_vendor_info_from_url(self, url: str) -> Optional[Dict]:
-        """从URL获取服务商信息"""
-        vendor_key = VendorInfo.get_vendor_by_url(url)
-        if vendor_key:
-            return VendorInfo.get_vendor_info(vendor_key)
-        return None
-    
-    def get_supported_vendors(self) -> Dict:
-        """获取所有支持的服务商"""
-        return VendorInfo.get_all_vendors()
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 示例：获取服务商信息
-    optimizer = VendorOptimizer()
-    
-    # 测试URL识别
-    test_urls = [
-        "https://www.dmit.io/cart.php?a=add&pid=123",
-        "https://racknerd.com/cart/",
-        "https://bandwagonhost.com/cart.php",
-        "https://cloudcone.com/",
-        "https://unknown-provider.com/"
-    ]
-    
-    print("=== 服务商识别测试 ===")
-    for url in test_urls:
-        vendor_info = optimizer.get_vendor_info_from_url(url)
-        if vendor_info:
-            print(f"URL: {url}")
-            print(f"服务商: {vendor_info['full_name']}")
-            print(f"描述: {vendor_info['description']}")
-            print(f"网站: {vendor_info['website']}")
-            print("-" * 40)
-        else:
-            print(f"URL: {url} - 未识别的服务商")
-            print("-" * 40)
-    
-    print("\n=== 支持的服务商列表 ===")
-    vendors = optimizer.get_supported_vendors()
-    for key, info in vendors.items():
-        print(f"{info['full_name']} ({info['name']})")
-        print(f"  网站: {info['website']}")
-        print(f"  描述: {info['description']}")
-        print(f"  关键词: {', '.join(info['keywords'])}")
-        print()
+    def _check_greencloud(self, driver) -> Dict:
+        """GreenCloudVPS特定检查"""
+        try:
+            # GreenCloud使用WHMCS，缺货显示"Out of Stock"
+            out_of_stock = driver.find_elements(
+                By.XPATH,
+                "//*[contains(text(), 'Out of Stock')] | //*[contains(@class, 'unavailable')]"
+            )
+            
+            if out_of_stock and any(el.is_displayed() for el in out_of_stock):
+                return {
+                    'status': False,
+                    'message': 'GreenCloudVPS显示Out of Stock'
+                }
+            
+            # 检查"Order Now"按钮
+            order_buttons = driver.find_elements(
+                By.XPATH,
+                "//a[contains(text(), 'Order Now')] | //button[contains(text(), 'Configure')]"
+            )
+            
+            if order_buttons and any(btn.is_displayed() and btn.is_enabled() for btn in order_buttons):
+                return {
+                    'status': True,
+                    'message': 'GreenCloudVPS有可用的订购按钮'
+                }
+            
+            return {'status': None, 'message': 'GreenCloudVPS检查无法确定状态'}
+            
+        except Exception as e:
+            return {'status': None, 'message': f'GreenCloudVPS检查异常: {str(e)}'}
