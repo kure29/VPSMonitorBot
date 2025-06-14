@@ -248,12 +248,16 @@ class VPSMonitor:
                 self.logger.error(f"检查项目失败 {item.url}: {e}")
     
     async def _check_for_notifications(self, item, stock_available: bool, check_info: Dict) -> None:
-        """检查是否需要发送通知"""
-        # 只有状态变化或首次检查时才通知
-        if item.status != stock_available:
-            confidence = check_info.get('confidence', 0)
+    """检查是否需要发送通知 - 修改为通知用户本人"""
+    # 只有状态变化或首次检查时才通知
+    if item.status != stock_available:
+        confidence = check_info.get('confidence', 0)
+        
+        if stock_available and confidence >= self.config_manager.config.confidence_threshold:
+            # 检查用户是否可以收到通知
+            can_notify = await self.db_manager.check_can_notify_user(item.user_id, item.id)
             
-            if stock_available and confidence >= self.config_manager.config.confidence_threshold:
+            if can_notify:
                 # 有货通知
                 notification = {
                     'type': 'stock_available',
@@ -269,7 +273,94 @@ class VPSMonitor:
                 if not last_notified or (datetime.now() - last_notified).seconds > self.config_manager.config.notification_cooldown:
                     self._pending_notifications.append(notification)
                     self._last_notified[cooldown_key] = datetime.now()
-    
+    async def _send_user_notifications(self, user_id: str, notifications: List[Dict]) -> None:
+        """发送用户通知"""
+        try:
+            # 获取用户信息
+            user_info = await self.db_manager.get_user(user_id)
+            if not user_info:
+                self.logger.warning(f"用户 {user_id} 不存在")
+                return
+            
+            user_display = user_info.username or user_info.first_name or f"用户{user_id}"
+            
+            if len(notifications) == 1:
+                # 单个通知
+                item = notifications[0]['item']
+                confidence = notifications[0]['confidence']
+                
+                message = (
+                    f"🟢 **有货提醒**\n\n"
+                    f"👋 Hi {user_display}！\n\n"
+                    f"📝 **商品:** {item.name}\n"
+                    f"🔗 **链接:** {item.url}\n"
+                    f"🎯 **置信度:** {confidence:.2f}\n"
+                    f"🕐 **检测时间:** {datetime.now().strftime('%H:%M:%S')}\n\n"
+                    f"🧠 **检测方法:** 智能组合算法\n"
+                    f"💡 **提示:** 库存变化较快，请及时查看"
+                )
+            else:
+                # 批量通知
+                message = f"🟢 **批量有货提醒**\n\n"
+                message += f"👋 Hi {user_display}！您有 {len(notifications)} 个商品有货了：\n\n"
+                
+                for i, notification in enumerate(notifications[:5], 1):
+                    item = notification['item']
+                    confidence = notification['confidence']
+                    
+                    message += f"{i}. **{item.name}**\n"
+                    message += f"   🎯 置信度: {confidence:.2f}\n"
+                    message += f"   🔗 {item.url}\n\n"
+                
+                if len(notifications) > 5:
+                    message += f"...还有 {len(notifications) - 5} 个商品有货\n\n"
+                
+                message += f"🕐 **检测时间:** {datetime.now().strftime('%H:%M:%S')}\n"
+                message += f"💡 **提示:** 库存变化较快，请及时查看"
+            
+            # 发送给用户本人
+            try:
+                await self.telegram_bot.send_notification(message, parse_mode='Markdown', chat_id=user_id)
+                
+                # 更新用户通知记录
+                await self.db_manager.update_notification_record(user_id)
+                
+                # 记录通知历史
+                for notification in notifications:
+                    item = notification['item']
+                    await self.db_manager.add_notification_history(
+                        user_id=user_id,
+                        monitor_id=item.id,
+                        message=message,
+                        notification_type='stock_alert'
+                    )
+                    
+                    # 添加商品通知历史
+                    await self.db_manager.add_item_notification_history(
+                        user_id=user_id,
+                        item_id=item.id,
+                        status=True
+                    )
+                
+                self.logger.info(f"已向用户 {user_display} ({user_id}) 发送 {len(notifications)} 个通知")
+                
+            except Exception as e:
+                self.logger.error(f"发送通知给用户 {user_id} 失败: {e}")
+                
+                # 如果用户通知失败，发送给管理员
+                admin_message = (
+                    f"⚠️ **用户通知失败**\n\n"
+                    f"👤 用户: {user_display} ({user_id})\n"
+                    f"📱 有货商品: {len(notifications)} 个\n"
+                    f"❌ 错误: {str(e)}\n\n"
+                    f"请检查用户是否已启动机器人对话"
+                )
+                
+                for admin_id in self.config_manager.config.admin_ids:
+                    await self.telegram_bot.send_notification(admin_message, parse_mode='Markdown', chat_id=admin_id)
+                
+        except Exception as e:
+            self.logger.error(f"处理用户通知失败: {e}")
     async def _process_notifications(self) -> None:
         """处理待发送的通知"""
         if not self._pending_notifications:
@@ -280,16 +371,21 @@ class VPSMonitor:
         if time_since_last < self.config_manager.config.notification_aggregation_interval:
             return
         
-        # 按类型分组通知
-        available_notifications = [n for n in self._pending_notifications if n['type'] == 'stock_available']
+        # 按用户分组通知
+        user_notifications = {}
+        for notification in self._pending_notifications:
+            user_id = notification['item'].user_id
+            if user_id not in user_notifications:
+                user_notifications[user_id] = []
+            user_notifications[user_id].append(notification)
         
-        if available_notifications:
-            await self._send_aggregated_notifications(available_notifications)
+        # 为每个用户发送通知
+        for user_id, notifications in user_notifications.items():
+            await self._send_user_notifications(user_id, notifications)
         
         # 清空待发送列表
         self._pending_notifications.clear()
         self._last_aggregation_time = datetime.now()
-    
     async def _send_aggregated_notifications(self, notifications: List[Dict]) -> None:
         """发送聚合通知"""
         if len(notifications) == 1:
