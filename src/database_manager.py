@@ -396,23 +396,23 @@ class DatabaseManager:
     async def update_monitor_item_status(self, item_id: str, enabled: bool) -> bool:
         """更新监控项启用状态"""
         try:
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "UPDATE monitor_items SET enabled = ? WHERE id = ?",
-                (1 if enabled else 0, item_id)
-            )
-            await db.commit()
-            
-            if cursor.rowcount > 0:
-                self.logger.info(f"监控项 {item_id} 状态更新为: {'启用' if enabled else '禁用'}")
-                return True
-            else:
-                self.logger.warning(f"未找到监控项 {item_id}")
-                return False
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "UPDATE monitor_items SET enabled = ? WHERE id = ?",
+                    (1 if enabled else 0, item_id)
+                )
+                await db.commit()
                 
-    except Exception as e:
-        self.logger.error(f"更新监控项状态失败: {e}")
-        return False
+                if cursor.rowcount > 0:
+                    self.logger.info(f"监控项 {item_id} 状态更新为: {'启用' if enabled else '禁用'}")
+                    return True
+                else:
+                    self.logger.warning(f"未找到监控项 {item_id}")
+                    return False
+                    
+        except Exception as e:
+            self.logger.error(f"更新监控项状态失败: {e}")
+            return False
     async def add_monitor_item(self, user_id: str, name: str, url: str, 
                              config: str = "", tags: List[str] = None, 
                              is_global: bool = False) -> Tuple[str, bool]:
